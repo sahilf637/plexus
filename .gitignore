@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+target/
+backend/gen/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.sw?
+
+# Local tooling
+.claude/
+
+# Bundled model files, fetched at build time (never committed)
+backend/resources/models/
+
+# Local test data and databases
+*.db
+*.db-shm
+*.db-wal
+/data/

@@ -1,0 +1,155 @@
+# Plexus — Product & Tech Overview
+
+## Context
+
+People collect a lot of scattered material: snippets, links, screenshots, docs. Notes apps only
+stay useful if you file things by hand, and the graph views they offer turn into an unreadable
+hairball. Plexus removes the filing entirely: **you copy, it connects.** The main view is a map of
+everything you've collected, grouped into topics, with links that explain themselves, plus an
+assistant that can answer questions by exploring the whole collection.
+
+Decisions so far:
+- **Platform:** desktop app (Tauri), local-first. Not a hosted web app.
+- **Not a notes editor.** Capture and explore, not write. (DocBook already covers editing.)
+- **AI providers:** any (local or cloud), and the app must work without one.
+- **Stack preferences:** Svelte frontend; keep the Rust side thin and modular.
+
+## Landscape
+
+| Product | What it does | Gap Plexus targets |
+|---|---|---|
+| **Atomic** (MIT, Tauri + Rust + sqlite-vec + Sigma) | Markdown notes auto-tagged, embedded and linked by similarity; tag-based canvas; wiki synthesis; scheduled reports; agentic chat; MCP | No clipboard/hotkey capture; markdown + URLs only; embeddings need a remote provider or Ollama; edges have no type or reason; chat agent capped at 10 steps with no graph walking; heavy (server sidecar, cloud) |
+| **LLM Wiki** (GPL-3, Tauri) | LLM builds an interlinked wiki from documents | Wiki-first, not capture-first |
+| **Recall** (hosted) | Save and summarize content; knowledge graph view | Cloud only |
+| **Reor** (archived Mar 2026) | Local AI notes with similarity links | Editor-first; discontinued |
+| **Smart Connections / InfraNodus** | Obsidian plugins: semantic neighbors, text-network gaps | Live inside Obsidian |
+
+**Positioning:** Atomic is a knowledge base you curate. Plexus is one you just feed.
+
+## 1. Core loop
+
+```
+Copy anything ─► global hotkey / paste / drag-drop / (opt-in) clipboard watch
+                    │
+T0  <50ms           detect type → secret check → store raw → node appears
+T1  <1s, local      extract text → chunk → embed → similarity edges → join a cluster
+T2  background, LLM title, summary, concepts, typed edges with reasons
+                    │
+                    ▼
+       Map (topics → sub-topics → items)   ·   Ask (agent with citations)
+```
+
+Each stage is useful on its own. Without an AI provider, T2 is skipped and the map still works,
+with topics named from their most distinctive words.
+
+## 2. Capture: any format
+
+| Clipboard / input | Handling |
+|---|---|
+| Plain text, code | Item as-is; detect code and language |
+| Rich HTML | Convert to markdown; keep source URL |
+| URL | Fetch + readable-article extraction; YouTube → transcript; GitHub → README |
+| Image / screenshot | Local OCR; optional vision LLM in T2 |
+| Files | PDF, DOCX, EPUB, markdown, plain text |
+| Audio (later) | Local transcription (whisper.cpp) |
+| Anything else | Stored raw with its type; never rejected |
+
+**Safety:** captures pass a secret detector (key/token patterns, high-entropy strings) before
+storage. Clipboard watching is opt-in and skips password-manager sources. Exact duplicates (hash)
+are merged; near-duplicates (embedding similarity > ~0.95) are flagged.
+
+## 3. Graph model
+
+Three layers: **Items ↔ Concepts ↔ Topics.**
+
+- **Items:** each capture. Long items are split into chunks; links are found between chunks and
+  rolled up to the item.
+- **Concepts:** a small, deduplicated vocabulary extracted by the LLM ("LLM", "LLMs" and "large
+  language models" are one concept, with aliases).
+- **Topics:** hierarchical clusters (Leiden/Louvain on the similarity graph), named by the LLM.
+  Cluster ids stay stable across re-clustering by matching on member overlap.
+
+**Edges** carry: type (`similar`, `supports`, `contradicts`, `example_of`, `extends`, `same_source`,
+`user`), weight, a one-line reason, confidence, provenance (`embedding | llm | user`) and status
+(`proposed | accepted | rejected`). Users can accept or reject any edge.
+
+### Data model (sketch)
+
+```
+items(id, kind, raw, text, source_url, content_hash, created_at, pipeline_version)
+chunks(id, item_id, ord, text)              vec_chunks (sqlite-vec)   fts (FTS5)
+concepts(id, name, aliases, summary)        item_concepts(item_id, concept_id, weight)
+edges(src, dst, kind, weight, reason, confidence, provenance, status, pipeline_version)
+topics(id, parent_id, level, label, summary)  topic_members(topic_id, item_id)
+layout(node_id, level, x, y)
+```
+
+## 4. AI context: never the whole corpus
+
+Per new item, one enrichment call of roughly 3k tokens, **regardless of corpus size**:
+
+1. Candidates without an LLM: vector top-k + keyword (BM25) + concept-name matches.
+2. The call receives the item (or chunk summaries), ~10–20 candidate cards (id, title, one-line
+   summary) and the ~30 most relevant concepts.
+3. It returns structured JSON: title, summary, concepts (existing id or new), edges to candidate
+   ids with type, reason and confidence. Edges to ids it wasn't shown are dropped.
+
+Supporting rules: cache by content hash + pipeline version; cheap model for enrichment, stronger
+model for topic naming and answers; prompt caching for static prompts; batch requests for bulk
+imports. Topic summaries let global questions ("what have I collected about X?") be answered from
+summaries instead of raw items.
+
+## 5. Ask: an agent that explores
+
+A Claude-Code-style loop over the knowledge base rather than single-shot RAG.
+
+| Tool | Purpose |
+|---|---|
+| `search(query, mode, scope)` | Hybrid / semantic / keyword search |
+| `grep(pattern)` | Exact or regex match over raw text |
+| `read(item, offset, limit)` | Paged reading of an item |
+| `neighbors(item, edge_types, depth)` | Walk the graph |
+| `topic_overview(topic)` / `list_members(topic)` | Browse the hierarchy |
+| `spawn_subagent(question, scope)` | Fan out per topic, then combine |
+| `notes(...)` | Working memory across steps |
+
+It plans sub-questions, iterates within a token/step budget, answers with numbered citations,
+and says when the collection doesn't cover something. **The agent's path is shown live on the
+map**: items light up as it reads them.
+
+## 6. Big graphs
+
+- **Rendering:** Sigma.js (WebGL). Positions are computed once (embedding projection +
+  ForceAtlas2 refinement in a Web Worker) and stored, so the map stays stable between sessions;
+  new items are placed near their neighbors without moving everything else.
+- **Understanding:** semantic zoom. Zoomed out shows ~10–20 named topics sized by content; zooming
+  in reveals sub-topics, then items. Focus mode shows one item's 1–2 hop neighborhood. Each item
+  keeps only its top 3–5 edges by default; weak similarity edges are hidden; filters by time,
+  source, type and concept.
+- **Data:** the UI requests slices by zoom level and viewport, so the full graph is never loaded at
+  once.
+
+## 7. Usability
+
+- First run works immediately: no account, no API key. "Connect an AI" is an upgrade.
+- One action: paste. Global hotkey, tray, drag-drop.
+- The home screen is the map, with plain-language prompts ("3 new connections", "Your *Rust* topic
+  grew this week").
+- Simple by default; power features (edge types, filters, prompts) behind a toggle.
+- Every AI change is explainable and undoable.
+
+## 8. Milestones
+
+| | Scope |
+|---|---|
+| **M0** | Scaffold; paste/hotkey capture of text and URLs; local embeddings; similarity edges; Sigma map. Fully offline. |
+| **M1** | More formats: rich HTML, images (OCR), PDF/DOCX; secret detection; duplicates. |
+| **M2** | LLM enrichment: titles, summaries, concepts, typed edges with reasons; accept/reject. |
+| **M3** | Topics: hierarchical clustering, names, semantic zoom, stable layout. |
+| **M4** | Ask agent with graph tools, citations and live path on the map. |
+| **M5** | Scale: viewport slicing, incremental layout; imports (Obsidian, Notion, bookmarks); MCP server. |
+
+## Open decisions
+
+- License (MIT vs. something else).
+- Trademark check on the name before any public launch.
