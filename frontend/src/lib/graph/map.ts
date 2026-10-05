@@ -73,6 +73,8 @@ export class MapController {
   private matches: Set<string> | null = null
   private events: MapEvents
   private themeQuery = window.matchMedia('(prefers-color-scheme: dark)')
+  /** The window can start hidden (launched at login), with no size yet: redraw once it has one. */
+  private resizeObserver = new ResizeObserver(() => this.sigma.refresh())
 
   constructor(container: HTMLElement, events: MapEvents) {
     this.events = events
@@ -90,6 +92,7 @@ export class MapController {
       labelDensity: 0.8,
       labelGridCellSize: 110,
       zIndex: true,
+      allowInvalidContainer: true,
       minCameraRatio: 0.02,
       maxCameraRatio: 20,
       nodeReducer: (node, data) => this.reduceNode(node, data as unknown as NodeAttributes),
@@ -109,6 +112,7 @@ export class MapController {
     this.sigma.on('clickNode', ({ node }) => this.events.select(node))
     this.sigma.on('clickStage', () => this.events.select(null))
     this.themeQuery.addEventListener('change', this.onThemeChange)
+    this.resizeObserver.observe(container)
   }
 
   /** Replaces everything on the map. */
@@ -218,6 +222,7 @@ export class MapController {
 
   destroy() {
     this.themeQuery.removeEventListener('change', this.onThemeChange)
+    this.resizeObserver.disconnect()
     this.sigma.kill()
   }
 

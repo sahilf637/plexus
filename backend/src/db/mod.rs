@@ -82,6 +82,11 @@ const MIGRATIONS: &[&str] = &[r#"
     DELETE FROM chunks;
     CREATE VIRTUAL TABLE vec_chunks USING vec0(embedding float[384] distance_metric=cosine);
     UPDATE items SET status = 'pending';
+"#, r#"
+    -- What produced the note's body (from the frontmatter). Links without it still need their
+    -- web page read.
+    ALTER TABLE items ADD COLUMN extracted TEXT;
+    CREATE INDEX items_source_url ON items(source_url);
 "#];
 
 pub struct Db {

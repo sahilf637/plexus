@@ -11,6 +11,8 @@ export interface Settings {
   hotkeyAction: HotkeyAction
   /** Launch at login so the hotkey is always ready. */
   startAtLogin: boolean
+  /** Download the web page behind a saved link so it can be searched and linked. */
+  fetchLinks: boolean
 }
 
 export interface HotkeyStatus {
@@ -55,6 +57,9 @@ export interface Item {
   mime: string | null
   size: number | null
   status: ItemStatus
+  /** What produced the body: "web@1" once a link's page was read, "web-unreadable@1" if it
+   * couldn't be. Absent while a link's page hasn't been read yet. */
+  extracted: string | null
 }
 
 export interface ItemDetail extends Item {

@@ -12,7 +12,7 @@
   } from '../lib/api'
   import { isPlainText, resolve, snapshot } from '../lib/paste'
   import { formatBytes, kindLabel } from '../lib/kinds'
-  import type { CaptureResult, ItemLinked, Kind, Preview } from '../lib/types'
+  import type { CaptureResult, Item, ItemLinked, Kind, Preview } from '../lib/types'
 
   /** An image or file to save instead of text. */
   type Attachment = {
@@ -30,6 +30,8 @@
   const CLOSE_AFTER_SAVE_MS = 1400
   /** How long to wait for links before closing anyway, and how long to show them. */
   const WAIT_FOR_LINKS_MS = 3000
+  /** Links have their page read first, which takes longer. */
+  const WAIT_FOR_PAGE_MS = 8000
   const SHOW_LINKS_MS = 1800
 
   let text = $state('')
@@ -41,6 +43,7 @@
   /** The capture was already in Plexus, so nothing new was saved. */
   let duplicate = $state(false)
   let savedId = $state<string | null>(null)
+  let savedKind = $state<Kind | null>(null)
   /** Titles of what the saved item linked to, once known. */
   let linkedTo = $state<string[] | null>(null)
   let errorMessage = $state('')
@@ -63,6 +66,7 @@
     if (attachment?.thumbnail) URL.revokeObjectURL(attachment.thumbnail)
     text = ''
     savedId = null
+    savedKind = null
     linkedTo = null
     attachment = null
     preview = null
@@ -169,12 +173,13 @@
       savedTitle = result.title
       duplicate = result.status === 'duplicate'
       phase = 'saved'
-      if (duplicate) {
+      if (result.status === 'duplicate') {
         closeTimer = setTimeout(close, CLOSE_AFTER_SAVE_MS)
       } else {
         // Stay open briefly to show what it linked to.
         savedId = result.id
-        closeTimer = setTimeout(close, WAIT_FOR_LINKS_MS)
+        savedKind = result.kind
+        closeTimer = setTimeout(close, result.kind === 'url' ? WAIT_FOR_PAGE_MS : WAIT_FOR_LINKS_MS)
       }
     } catch (e) {
       errorMessage = String(e)
@@ -213,11 +218,19 @@
     closeTimer = setTimeout(close, SHOW_LINKS_MS)
   }
 
+  function onItemUpdated(item: Item) {
+    if (phase === 'saved' && item.id === savedId) {
+      savedTitle = item.title
+      savedKind = null // The page is read; now it's just being linked.
+    }
+  }
+
   onMount(() => {
     reset()
     const unsubscribers = [
       on('capture-opened', reset),
       on<ItemLinked>('item-linked', onItemLinked),
+      on<Item>('item-updated', onItemUpdated),
       onFileDrop({
         over: (over) => (dragOver = over),
         drop: (paths) => paths[0] && phase === 'edit' && attachPath(paths[0]),
@@ -252,7 +265,7 @@
       {#if duplicate}
         <p class="muted">Already in Plexus, so nothing new was saved.</p>
       {:else if linkedTo === null}
-        <p class="muted">Saved. Finding related items…</p>
+        <p class="muted">Saved. {savedKind === 'url' ? 'Reading the page…' : 'Finding related items…'}</p>
       {:else if linkedTo.length}
         <p class="muted">Linked to</p>
         <ul class="linked">

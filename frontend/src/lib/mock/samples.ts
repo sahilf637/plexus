@@ -31,6 +31,7 @@ export function sampleItems(): ItemDetail[] {
     mime: kind === 'image' ? 'image/png' : kind === 'file' ? 'application/pdf' : null,
     size: null,
     status: 'linked',
+    extracted: kind === 'url' ? 'web@1' : null,
     body,
     assetFile: null,
   }))

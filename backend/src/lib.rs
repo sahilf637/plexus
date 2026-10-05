@@ -2,6 +2,7 @@ mod capture;
 mod commands;
 mod db;
 mod error;
+mod fetch;
 mod library;
 mod pipeline;
 mod settings;
@@ -9,11 +10,14 @@ mod state;
 mod tray;
 mod windows;
 
+use std::sync::mpsc::Receiver;
+
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 
 use capture::hotkey::{self, Hotkey};
 use db::Db;
+use fetch::Fetcher;
 use library::Library;
 use pipeline::Pipeline;
 use pipeline::embed::{self, Embedder};
@@ -48,9 +52,10 @@ pub fn run() {
             let db = Db::open(&library.index_path())?;
             // Lets the map show images straight from the library folder (and nothing else).
             app.asset_protocol_scope().allow_directory(library.root(), true)?;
-            let (pipeline, queue) = Pipeline::new(Embedder::new(find_model(app.handle())));
-            app.manage(AppState { settings, hotkey: Hotkey::default(), library, db, pipeline });
-            start_background_work(app.handle(), queue);
+            let (pipeline, link_queue) = Pipeline::new(Embedder::new(find_model(app.handle())));
+            let (fetcher, fetch_queue) = Fetcher::new();
+            app.manage(AppState { settings, hotkey: Hotkey::default(), library, db, pipeline, fetcher });
+            start_background_work(app.handle(), link_queue, fetch_queue);
             tray::create(app.handle())?;
             hotkey::register(app.handle());
             let args: Vec<String> = std::env::args().collect();
@@ -89,9 +94,9 @@ pub fn run() {
         .expect("error while running Plexus");
 }
 
-/// Catches the index up with the library folder, then keeps linking items as they arrive. Runs
-/// on its own thread so startup doesn't wait for it.
-fn start_background_work(app: &AppHandle, queue: std::sync::mpsc::Receiver<String>) {
+/// Catches the index up with the library folder, then keeps reading links' pages and linking
+/// items as they arrive. Runs on its own threads so startup doesn't wait for it.
+fn start_background_work(app: &AppHandle, link_queue: Receiver<String>, fetch_queue: Receiver<String>) {
     let app = app.clone();
     std::thread::spawn(move || {
         let state = app.state::<AppState>();
@@ -103,7 +108,8 @@ fn start_background_work(app: &AppHandle, queue: std::sync::mpsc::Receiver<Strin
             }
             Err(e) => tracing::error!("couldn't read the library: {e}"),
         }
-        pipeline::run(app.clone(), queue);
+        fetch::run(&app, fetch_queue);
+        pipeline::run(app.clone(), link_queue);
     });
 }
 

@@ -35,11 +35,15 @@ pub fn text(library: &Library, db: &Db, text: &str, force: bool) -> Result<Saved
     let detected = detect::detect_text(text);
     let body = body_for_text(text, &detected);
     let body_hash = library::text_hash(&body);
-    if let Some(existing) = db.with(|conn| items::find_duplicate(conn, &body_hash, None))? {
+    let source = (detected.kind == Kind::Url).then(|| text.trim().to_string());
+    let existing = db.with(|conn| match &source {
+        Some(url) => items::find_link(conn, url),
+        None => items::find_duplicate(conn, &body_hash, None),
+    })?;
+    if let Some(existing) = existing {
         return Ok(Saved::not_saved(CaptureResult::Duplicate { id: existing.id, title: existing.title }));
     }
 
-    let source = (detected.kind == Kind::Url).then(|| text.trim().to_string());
     let meta = new_meta(&detected, body_hash, source);
     write(library, db, meta, body, None)
 }
@@ -91,10 +95,7 @@ fn new_meta(detected: &Detected, hash: String, source: Option<String>) -> NoteMe
 /// Writes the original (if any), then the note, then the index row. The note is the source of
 /// truth, so a crash after writing it is repaired by the next reconcile.
 fn write(library: &Library, db: &Db, mut meta: NoteMeta, mut body: String, asset: Option<(String, &[u8])>) -> Result<Saved> {
-    let captured = chrono::DateTime::parse_from_rfc3339(&meta.captured)
-        .map(|t| t.with_timezone(&Utc))
-        .unwrap_or_else(|_| Utc::now());
-    let path = library.new_note_path(&meta.title, &meta.id, captured);
+    let path = library.path_for(&meta);
 
     if let Some((ext, bytes)) = asset {
         let stem = path.file_stem().unwrap_or_default().to_string_lossy();

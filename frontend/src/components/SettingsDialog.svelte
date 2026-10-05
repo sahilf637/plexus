@@ -82,6 +82,15 @@
     </section>
 
     <section>
+      <h3>Links</h3>
+      <label class="row">
+        <input type="checkbox" checked={settings.fetchLinks} onchange={(e) => update({ fetchLinks: e.currentTarget.checked })} />
+        Read the web page behind each saved link, so it links up by what the page says
+      </label>
+      <p class="muted small">Turn off to keep links exactly as pasted, without contacting the site.</p>
+    </section>
+
+    <section>
       <h3>Library folder</h3>
       <p><code>{settings.libraryPath}</code></p>
       <p class="muted small">Every item is a markdown file here. Changing the folder comes later.</p>

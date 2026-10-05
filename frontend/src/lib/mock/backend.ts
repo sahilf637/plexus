@@ -9,6 +9,7 @@ let settings: Settings = {
   hotkey: 'Ctrl+Alt+V',
   hotkeyAction: 'openCapture',
   startAtLogin: true,
+  fetchLinks: true,
 }
 
 const items: ItemDetail[] = sampleItems()
@@ -52,6 +53,7 @@ function addItem(title: string, kind: Kind, body: string): CaptureResult {
     mime: null,
     size: null,
     status: 'pending',
+    extracted: null,
     body,
     assetFile: null,
   }
@@ -59,12 +61,22 @@ function addItem(title: string, kind: Kind, body: string): CaptureResult {
   if (existing) return { status: 'duplicate', id: existing.id, title: existing.title }
   items.push(item)
   emit('item-added', item)
+  // Links get their page "read": a nicer title and some text, then they're linked.
+  const readDelay = kind === 'url' ? 900 : 0
+  if (kind === 'url')
+    setTimeout(() => {
+      const slug = body.replace(/\/+$/, '').split('/').pop() ?? body
+      item.title = decodeURIComponent(slug).replace(/[-_]+/g, ' ').replace(/\.\w+$/, '') || item.title
+      item.body = `A page about ${item.title}.`
+      item.extracted = 'web@1'
+      emit('item-updated', { ...item })
+    }, readDelay)
   setTimeout(() => {
     item.status = 'linked'
     const edges = linksFor(item)
     const related = edges.map((e) => ({ id: e.dst, title: items.find((i) => i.id === e.dst)!.title, weight: e.weight }))
     emit('item-linked', { id: item.id, status: 'linked', edges, related } satisfies ItemLinked)
-  }, 500)
+  }, readDelay + 500)
   return { status: 'saved', id: item.id, title, kind }
 }
 

@@ -93,6 +93,7 @@ pub fn item_from_note(library: &Library, path: &Path, note: &Note, mtime: i64, s
         file_mtime: mtime,
         file_size: size,
         status: Status::Pending,
+        extracted: meta.extracted.clone(),
     }
 }
 

@@ -47,7 +47,7 @@ pub struct Detected {
     pub title: String,
 }
 
-const TITLE_MAX: usize = 80;
+pub const TITLE_MAX: usize = 80;
 
 pub fn detect_text(text: &str) -> Detected {
     let trimmed = text.trim();

@@ -37,8 +37,9 @@ pub struct NoteMeta {
     pub mime: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
-    /// What produced the body from the original ("pdf-text@1"), or "edited" once the user
-    /// changed it.
+    /// What produced the body from the original: "web@1" (a link's page, read), "web-unreadable@1"
+    /// (a link whose page couldn't be read and isn't retried), "pdf-text@1", … or "edited" once
+    /// the user changed it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extracted: Option<String>,
     /// Links the user accepted or made: ids of other items.

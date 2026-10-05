@@ -19,6 +19,9 @@ pub struct Settings {
     pub hotkey_action: HotkeyAction,
     /// Launch at login so the hotkey is always ready.
     pub start_at_login: bool,
+    /// Download the web page behind a saved link, so it can be searched and linked by what it
+    /// says. Off keeps links as they were pasted, with no requests made.
+    pub fetch_links: bool,
 }
 
 /// What the global shortcut does.
@@ -40,6 +43,7 @@ impl Default for Settings {
             hotkey: "Ctrl+Alt+V".into(),
             hotkey_action: HotkeyAction::default(),
             start_at_login: true,
+            fetch_links: true,
         }
     }
 }

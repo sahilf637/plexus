@@ -72,6 +72,12 @@ impl Library {
         path
     }
 
+    /// A free path for a note, from its title, id and capture date.
+    pub fn path_for(&self, meta: &note::NoteMeta) -> PathBuf {
+        let captured = DateTime::parse_from_rfc3339(&meta.captured).map_or_else(|_| Utc::now(), |t| t.with_timezone(&Utc));
+        self.new_note_path(&meta.title, &meta.id, captured)
+    }
+
     pub fn write_note(&self, path: &Path, note: &Note) -> Result<()> {
         crate::settings::write_atomic(path, note.to_file()?.as_bytes())
     }

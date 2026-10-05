@@ -57,6 +57,8 @@ pub struct Item {
     pub asset_hash: Option<String>,
     pub mime: Option<String>,
     pub size: Option<i64>,
+    /// What produced the body: "web@1" for a link whose page was read, … (see `NoteMeta`).
+    pub extracted: Option<String>,
     #[serde(skip)]
     pub file_mtime: i64,
     #[serde(skip)]
@@ -73,7 +75,7 @@ pub struct FileState {
 }
 
 const COLUMNS: &str = "id, path, kind, title, source_url, language, captured_at, body_hash, \
-                       asset_path, asset_hash, mime, size, file_mtime, file_size, status";
+                       asset_path, asset_hash, mime, size, file_mtime, file_size, status, extracted";
 
 fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Item> {
     let kind: String = row.get(2)?;
@@ -94,6 +96,7 @@ fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Item> {
         file_mtime: row.get(12)?,
         file_size: row.get(13)?,
         status: Status::parse(&status),
+        extracted: row.get(15)?,
     })
 }
 
@@ -103,14 +106,14 @@ pub fn upsert(conn: &mut Connection, item: &Item, body: &str) -> Result<()> {
     let tx = conn.transaction()?;
     tx.execute(
         &format!(
-            "INSERT INTO items ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            "INSERT INTO items ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
              ON CONFLICT(id) DO UPDATE SET
                path = excluded.path, kind = excluded.kind, title = excluded.title,
                source_url = excluded.source_url, language = excluded.language,
                captured_at = excluded.captured_at, body_hash = excluded.body_hash,
                asset_path = excluded.asset_path, asset_hash = excluded.asset_hash,
                mime = excluded.mime, size = excluded.size, file_mtime = excluded.file_mtime,
-               file_size = excluded.file_size, status = excluded.status"
+               file_size = excluded.file_size, status = excluded.status, extracted = excluded.extracted"
         ),
         params![
             item.id,
@@ -128,6 +131,7 @@ pub fn upsert(conn: &mut Connection, item: &Item, body: &str) -> Result<()> {
             item.file_mtime,
             item.file_size,
             item.status.as_str(),
+            item.extracted,
         ],
     )?;
     tx.execute("DELETE FROM items_fts WHERE item_id = ?1", [&item.id])?;
@@ -178,6 +182,20 @@ pub fn find_duplicate(conn: &Connection, body_hash: &str, asset_hash: Option<&st
     Ok(conn.query_row(&sql, [asset_hash.unwrap_or(body_hash)], from_row).optional()?)
 }
 
+/// An existing link to the same address (its body changes once the page is read, so links
+/// aren't matched by body).
+pub fn find_link(conn: &Connection, url: &str) -> Result<Option<Item>> {
+    let sql = format!("SELECT {COLUMNS} FROM items WHERE kind = 'url' AND source_url = ?1 LIMIT 1");
+    Ok(conn.query_row(&sql, [url], from_row).optional()?)
+}
+
+/// Links whose web page hasn't been read yet.
+pub fn unread_links(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT id FROM items WHERE kind = 'url' AND extracted IS NULL ORDER BY captured_at")?;
+    let ids = stmt.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
+    Ok(ids)
+}
+
 /// Note path → what the index knows about that file.
 pub fn file_states(conn: &Connection) -> Result<HashMap<String, FileState>> {
     let mut stmt = conn.prepare("SELECT path, id, file_mtime, file_size FROM items")?;
@@ -211,6 +229,7 @@ pub(crate) fn sample(id: &str, path: &str, body_hash: &str) -> Item {
         file_mtime: 1,
         file_size: 10,
         status: Status::Pending,
+        extracted: None,
     }
 }
 

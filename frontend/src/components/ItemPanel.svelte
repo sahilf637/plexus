@@ -23,8 +23,12 @@
   let imageUrl = $state<string | null>(null)
   let error = $state('')
 
+  // Reloads when the item changes in the background too (a link's page was read).
+  const version = $derived(items.get(id)?.bodyHash)
+
   $effect(() => {
     const current = id
+    void version
     detail = null
     imageUrl = null
     error = ''
@@ -46,7 +50,7 @@
   )
 
   const html = $derived(
-    detail && (detail.kind === 'text' || detail.kind === 'code')
+    detail && (detail.kind === 'text' || detail.kind === 'code' || (detail.kind === 'url' && detail.extracted === 'web@1'))
       ? DOMPurify.sanitize(marked.parse(detail.body, { async: false }))
       : '',
   )
@@ -76,11 +80,14 @@
       <button onclick={() => openItemFile(detail!.id)}>{detail.assetPath ? 'Open file' : 'Open note'}</button>
     </div>
 
+    {#if detail.kind === 'url' && html}<p class="source muted">{detail.sourceUrl}</p>{/if}
+
     <div class="content">
       {#if imageUrl}
         <img src={imageUrl} alt={detail.title} />
-      {:else if detail.kind === 'url'}
+      {:else if detail.kind === 'url' && !html}
         <p class="source">{detail.sourceUrl}</p>
+        {#if detail.extracted === null}<p class="muted">Reading the page…</p>{/if}
       {:else if detail.kind === 'file'}
         <p class="muted">{detail.mime ?? 'File'}. Its text will be readable once document support lands.</p>
       {:else}

@@ -64,6 +64,15 @@
     if (!hadLinks && event.edges.length) mapView?.settle(event.id)
   }
 
+  /** An item's note changed in the background (a link's page was read): new title, body. */
+  function onItemUpdated(item: Item) {
+    if (!data) return
+    const index = data.items.findIndex((i) => i.id === item.id)
+    if (index < 0) return
+    data.items[index] = item
+    mapView?.addItem(item)
+  }
+
   let tidying = $state(false)
   async function tidy() {
     tidying = true
@@ -141,6 +150,7 @@
     const unsubscribers = [
       on<Item>('item-added', onItemAdded),
       on<ItemLinked>('item-linked', onItemLinked),
+      on<Item>('item-updated', onItemUpdated),
       on('library-changed', loadMap),
     ]
     return () => {

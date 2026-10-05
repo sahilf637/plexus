@@ -85,19 +85,23 @@ pub fn run(app: AppHandle, queue: Receiver<String>) {
 }
 
 fn prepare(state: &AppState) -> Result<()> {
-    let pending = state.db.with(|conn| {
+    let (pending, unread) = state.db.with(|conn| {
         if chunks::get_meta(conn, "embed_model")?.as_deref() != Some(embed::MODEL_ID) {
             tracing::info!(model = embed::MODEL_ID, "embedding model changed; re-linking everything");
             chunks::reset_embeddings(conn)?;
             chunks::set_meta(conn, "embed_model", embed::MODEL_ID)?;
         }
-        chunks::pending_ids(conn)
+        Ok((chunks::pending_ids(conn)?, items::unread_links(conn)?))
     })?;
     if !pending.is_empty() {
-        tracing::info!(count = pending.len(), "linking items");
+        tracing::info!(count = pending.len(), unread_links = unread.len(), "linking items");
     }
-    for id in pending {
-        state.pipeline.enqueue(&id);
+    // Links whose page hasn't been read go to the fetcher, which links them afterwards.
+    for id in pending.iter().filter(|id| !unread.contains(id)) {
+        state.pipeline.enqueue(id);
+    }
+    for id in &unread {
+        state.fetcher.enqueue(id);
     }
     Ok(())
 }
