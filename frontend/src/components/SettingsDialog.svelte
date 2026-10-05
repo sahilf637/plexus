@@ -318,6 +318,13 @@
                 </div>
                 <input type="checkbox" class="switch" checked={navigation.invertZoom} onchange={(e) => setNavigation({ invertZoom: e.currentTarget.checked })} />
               </label>
+              <label class="item">
+                <div class="label">
+                  <span>Move with the cursor <span class="tag">Experimental</span></span>
+                  <span class="desc">The view drifts towards the cursor, faster the further it is from the middle</span>
+                </div>
+                <input type="checkbox" class="switch" checked={navigation.edgeScroll} onchange={(e) => setNavigation({ edgeScroll: e.currentTarget.checked })} />
+              </label>
             </div>
 
             <h4>Startup</h4>

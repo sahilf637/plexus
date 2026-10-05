@@ -96,6 +96,16 @@ const MAX_RATIO = 2.5
  * trackpad's many small events add up to the same; pinching (sent with Ctrl held) is finer. */
 const WHEEL_SPEED = 0.0034
 const PINCH_SPEED = 0.01
+/** Following the cursor: the view drifts towards it, at a speed that grows exponentially with
+ * the cursor's distance from the middle (near nothing around the centre, `FOLLOW_SPEED` screens
+ * per second at the very edge). `FOLLOW_CURVE` is how steeply it picks up. */
+const FOLLOW_SPEED = 0.8
+const FOLLOW_CURVE = 5
+/** Below this fraction of the top speed the view stays still (and the frame loop rests). */
+const FOLLOW_MIN = 0.008
+/** How far past the outermost items the view may go (in view units; the whole map is about 1). */
+const EDGE_ROOM = 0.08
+
 /** One scroll event never counts for more than this many pixels, so a burst can't leap. */
 const MAX_PIXELS = 60
 /** How quickly the view catches up with the zoom asked for (time to cover ~63% of the gap). */
@@ -112,7 +122,14 @@ export class MapController {
   private layout: FA2Layout | undefined
   private burstTimer: ReturnType<typeof setTimeout> | undefined
   private container: HTMLElement
-  private navigation: Navigation = { invertZoom: true }
+  private navigation: Navigation = { invertZoom: true, edgeScroll: true }
+  /** Where the cursor is on the map (in pixels), or null when it isn't over it. */
+  private pointer: { x: number; y: number } | null = null
+  private edgeFrame = 0
+  private dragging = false
+  /** The map's extent in view coordinates, measured when a glide starts; the view stays inside. */
+  private bounds = { minX: 0, maxX: 1, minY: 0, maxY: 1 }
+  private edgeLast = 0
   /** The zoom scrolling has asked for; the view eases towards it a frame at a time. */
   private zoomAim: { ratio: number; cursor: { x: number; y: number } } | null = null
   private zoomFrame = 0
@@ -176,6 +193,99 @@ export class MapController {
     this.resizeObserver.observe(container)
     // Captured, so it runs before Sigma's own wheel zoom, which it replaces.
     container.addEventListener('wheel', this.onwheel, { passive: false, capture: true })
+    container.addEventListener('pointermove', this.onpointermove)
+    container.addEventListener('pointerleave', this.onpointerleave)
+    window.addEventListener('blur', this.onpointerleave)
+    window.addEventListener('pointerup', this.onpointerup)
+  }
+
+  /** Notes where the items are, so a glide can stop at the map's edge instead of drifting into
+   * empty space. */
+  private measure() {
+    const points = this.graph.nodes().map((id) => this.sigma.getNodeDisplayData(id)).filter((d) => d !== undefined)
+    if (!points.length) return
+    const xs = points.map((p) => p.x)
+    const ys = points.map((p) => p.y)
+    this.bounds = { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) }
+  }
+
+  /** The view's centre, held so the view never goes past the map's extent plus a little room.
+   * When the whole map already fits on screen along an axis, the view doesn't move that way. */
+  private inside(point: { x: number; y: number }): { x: number; y: number } {
+    const { minX, maxX, minY, maxY } = this.bounds
+    const { width, height } = this.sigma.getDimensions()
+    const ratio = this.sigma.getCamera().ratio
+    // The view spans about `ratio` view units along its longer side.
+    const halfX = (ratio / 2) * (width / Math.max(width, height))
+    const halfY = (ratio / 2) * (height / Math.max(width, height))
+    const camera = this.sigma.getCamera()
+    const hold = (value: number, current: number, min: number, max: number, half: number) => {
+      const low = min - EDGE_ROOM + half
+      const high = max + EDGE_ROOM - half
+      return low > high ? current : Math.min(high, Math.max(low, value))
+    }
+    return { x: hold(point.x, camera.x, minX, maxX, halfX), y: hold(point.y, camera.y, minY, maxY, halfY) }
+  }
+
+  private onpointerup = () => {
+    this.dragging = false
+  }
+
+  private onpointermove = (event: PointerEvent) => {
+    const rect = this.container.getBoundingClientRect()
+    this.pointer = { x: event.clientX - rect.left, y: event.clientY - rect.top }
+    this.dragging = event.buttons !== 0
+    if (this.navigation.edgeScroll && !this.edgeFrame) {
+      this.measure()
+      this.edgeLast = performance.now()
+      this.edgeFrame = requestAnimationFrame(this.edgeStep)
+    }
+  }
+
+  private onpointerleave = () => {
+    this.pointer = null
+  }
+
+  /** The speed, as a fraction of the top one, for a cursor at `position` along a side of length
+   * `size`: signed (towards the cursor), 0 in the middle, 1 at the edge. */
+  private follow(position: number, size: number): number {
+    const distance = Math.min(1, Math.abs(position - size / 2) / (size / 2))
+    const speed = (Math.exp(FOLLOW_CURVE * distance) - 1) / (Math.exp(FOLLOW_CURVE) - 1)
+    return position < size / 2 ? -speed : speed
+  }
+
+  /** Whether an item is under the cursor. Sigma only reports hovers when the mouse moves, so an
+   * item that drifts under a still cursor is found here. */
+  private touchingItem(pointer: { x: number; y: number }): boolean {
+    return this.graph.someNode((id) => {
+      const display = this.sigma.getNodeDisplayData(id)
+      if (!display || display.hidden) return false
+      const at = this.sigma.framedGraphToViewport(display)
+      return Math.hypot(at.x - pointer.x, at.y - pointer.y) <= Math.max(this.sigma.scaleSize(display.size), 4) + 3
+    })
+  }
+
+  private edgeStep = (now: number) => {
+    this.edgeFrame = 0
+    const pointer = this.pointer
+    // Stops when the cursor leaves or the setting is off; a pointer move starts it again.
+    if (!pointer || !this.navigation.edgeScroll) return
+    const { width, height } = this.sigma.getDimensions()
+    let dx = this.follow(pointer.x, width)
+    let dy = this.follow(pointer.y, height)
+    if (Math.abs(dx) < FOLLOW_MIN) dx = 0
+    if (Math.abs(dy) < FOLLOW_MIN) dy = 0
+    const seconds = Math.min(now - this.edgeLast, 50) / 1000
+    this.edgeLast = now
+    if (!dx && !dy) return
+    // Resting on an item holds the view still, so it can be read or clicked; holding a button is
+    // dragging the map by hand. Either way keep watching, and move on again once it's free.
+    if (!this.dragging && !this.hovered && !this.touchingItem(pointer)) {
+      const step = FOLLOW_SPEED * seconds
+      const to = this.sigma.viewportToFramedGraph({ x: width / 2 + dx * width * step, y: height / 2 + dy * height * step })
+      this.sigma.getCamera().setState(this.inside(to))
+    }
+    this.edgeFrame = requestAnimationFrame(this.edgeStep)
   }
 
   setNavigation(navigation: Navigation) {
@@ -450,6 +560,7 @@ export class MapController {
     // A glide to a selected item may still be running; the keys take over from here.
     const camera = this.sigma.getCamera()
     void camera.animate(camera.getState(), { duration: 1 })
+    this.measure()
     this.panLast = performance.now()
     this.panFrame = requestAnimationFrame(this.panStep)
   }
@@ -469,7 +580,7 @@ export class MapController {
     const dx = (this.panHeld.has('right') ? 1 : 0) - (this.panHeld.has('left') ? 1 : 0)
     const dy = (this.panHeld.has('down') ? 1 : 0) - (this.panHeld.has('up') ? 1 : 0)
     const to = this.sigma.viewportToFramedGraph({ x: width / 2 + dx * width * step, y: height / 2 + dy * height * step })
-    this.sigma.getCamera().setState({ x: to.x, y: to.y })
+    this.sigma.getCamera().setState(this.inside(to))
     this.panFrame = requestAnimationFrame(this.panStep)
   }
 
@@ -493,7 +604,12 @@ export class MapController {
   destroy() {
     cancelAnimationFrame(this.panFrame)
     cancelAnimationFrame(this.zoomFrame)
+    cancelAnimationFrame(this.edgeFrame)
     this.container.removeEventListener('wheel', this.onwheel, { capture: true })
+    this.container.removeEventListener('pointermove', this.onpointermove)
+    this.container.removeEventListener('pointerleave', this.onpointerleave)
+    window.removeEventListener('blur', this.onpointerleave)
+    window.removeEventListener('pointerup', this.onpointerup)
     this.themeQuery.removeEventListener('change', this.onThemeChange)
     this.resizeObserver.disconnect()
     clearTimeout(this.burstTimer)

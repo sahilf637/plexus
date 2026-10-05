@@ -5,15 +5,18 @@ export interface Navigation {
    * default): sliding two fingers up the trackpad zooms in, which with natural scrolling is the
    * wheel's opposite. */
   invertZoom: boolean
+  /** Experimental: the view drifts towards the cursor, faster the further it is from the middle. */
+  edgeScroll: boolean
 }
 
 const KEY = 'plexus.navigation'
 
 function read(): Navigation {
   try {
-    return { invertZoom: JSON.parse(localStorage.getItem(KEY) ?? '{}').invertZoom !== false }
+    const saved = JSON.parse(localStorage.getItem(KEY) ?? '{}')
+    return { invertZoom: saved.invertZoom !== false, edgeScroll: saved.edgeScroll !== false }
   } catch {
-    return { invertZoom: true }
+    return { invertZoom: true, edgeScroll: true }
   }
 }
 
