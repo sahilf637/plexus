@@ -6,12 +6,11 @@
     captureFile,
     capturePreview,
     captureText,
-    clipboardImage,
     hideCapture,
     on,
     onFileDrop,
-    pastedFiles,
   } from '../lib/api'
+  import { isPlainText, resolve, snapshot } from '../lib/paste'
   import { formatBytes, kindLabel } from '../lib/kinds'
   import type { CaptureResult, Kind, Preview } from '../lib/types'
 
@@ -114,42 +113,23 @@
     text = textarea.value
   }
 
-  // What a paste carries depends on the source app and the OS. The webview hands over text and
-  // some files; on Linux, images and copied files need the backend's help.
   async function onpaste(event: ClipboardEvent) {
-    const data = event.clipboardData
-    if (!data || phase !== 'edit') return
-    const file = [...data.items].find((item) => item.kind === 'file')?.getAsFile()
-    if (file) {
-      event.preventDefault()
-      attachBlob(file, file.name)
-      return
-    }
-
-    const plain = data.getData('text/plain')
-    const uriList = data.getData('text/uri-list')
-    const mayBeFiles = /^\s*(\/|file:\/\/)/.test(uriList || plain)
-    const mayBeImage = !plain.trim() || data.types.some((type) => type.startsWith('image/'))
-    if (!mayBeFiles && !mayBeImage) {
-      // Plain text: the textarea takes it as usual. If something else had focus, put it there.
+    if (!event.clipboardData || phase !== 'edit') return
+    const pasted = snapshot(event.clipboardData)
+    if (isPlainText(pasted)) {
+      // The textarea takes it as usual. If something else had focus, put it there.
       if (document.activeElement !== textarea) {
         event.preventDefault()
-        insertText(plain)
+        insertText(pasted.plain)
       }
       return
     }
-
-    // From here on the answer is asynchronous, so stop the default paste and do it ourselves.
+    // The answer may need the backend, so stop the default paste and do it ourselves.
     event.preventDefault()
-    if (mayBeFiles) {
-      const paths = await pastedFiles(uriList || plain)
-      if (paths.length) return attachPath(paths[0])
-    }
-    if (mayBeImage) {
-      const image = await clipboardImage().catch(() => null)
-      if (image) return attachBlob(image, 'Pasted image.png')
-    }
-    if (plain) insertText(plain)
+    const content = await resolve(pasted)
+    if (content?.kind === 'blob') attachBlob(content.blob, content.name)
+    else if (content?.kind === 'path') attachPath(content.path)
+    else if (content?.kind === 'text') insertText(content.text)
   }
 
   // Drops from a browser (dev:ui) arrive as DOM events; in the app, files come through Tauri.

@@ -1,7 +1,7 @@
 // The only module that talks to the Rust side. Outside Tauri (`npm run dev:ui`) every call
 // goes to an in-memory mock instead, so the UI can be built in a plain browser.
 
-import type { CaptureResult, HotkeyStatus, Item, ItemDetail, Preview, Settings } from './types'
+import type { CaptureResult, HotkeyStatus, Item, ItemDetail, MapData, Position, Preview, Settings } from './types'
 import * as mock from './mock/backend'
 
 export const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
@@ -49,6 +49,18 @@ export const captureFile = (path: string) => call<CaptureResult>('capture_file',
 
 export const listItems = () => call<Item[]>('list_items')
 export const getItem = (id: string) => call<ItemDetail>('get_item', { id })
+export const getMap = () => call<MapData>('get_map')
+export const saveLayout = (positions: Position[]) => call<void>('save_layout', { positions })
+export const search = (query: string) => call<string[]>('search', { query })
+export const openItemFile = (id: string) => call<void>('open_item_file', { id })
+export const openSource = (id: string) => call<void>('open_source', { id })
+
+/** A URL the webview can load a library file from (images in the item panel). */
+export async function fileUrl(path: string): Promise<string> {
+  if (!inTauri) return path
+  const { convertFileSrc } = await import('@tauri-apps/api/core')
+  return convertFileSrc(path)
+}
 
 /** Pasted images and files go over as raw bytes, not JSON. */
 export async function captureBytes(blob: Blob, name: string): Promise<CaptureResult> {

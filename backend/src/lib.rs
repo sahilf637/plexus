@@ -36,12 +36,15 @@ pub fn run() {
             Some(vec![HIDDEN_FLAG]),
         ))
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             let settings = SettingsStore::load(app.path().app_config_dir()?.join("settings.json"))?;
             sync_autostart(app.handle(), &settings.get());
             let library = Library::open(settings.get().library_path)?;
             let db = Db::open(&library.index_path())?;
+            // Lets the map show images straight from the library folder (and nothing else).
+            app.asset_protocol_scope().allow_directory(library.root(), true)?;
             app.manage(AppState { settings, hotkey: Hotkey::default(), library, db });
             reconcile_in_background(app.handle());
             tray::create(app.handle())?;
@@ -72,6 +75,11 @@ pub fn run() {
             commands::capture_bytes,
             commands::list_items,
             commands::get_item,
+            commands::get_map,
+            commands::save_layout,
+            commands::search,
+            commands::open_item_file,
+            commands::open_source,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Plexus");
@@ -117,7 +125,8 @@ pub(crate) fn sync_autostart(app: &AppHandle, settings: &Settings) {
 }
 
 fn init_tracing() {
-    let default = if cfg!(debug_assertions) { "info,plexus_lib=debug" } else { "info" };
+    // zbus logs harmless proxy-cache warnings for every portal request.
+    let default = if cfg!(debug_assertions) { "info,zbus=error,plexus_lib=debug" } else { "info,zbus=error" };
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default));
     tracing_subscriber::fmt().with_env_filter(filter).init();

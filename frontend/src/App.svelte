@@ -1,35 +1,181 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { hotkeyStatus, showCapture } from './lib/api'
+  import {
+    captureBytes,
+    captureFile,
+    captureText,
+    getMap,
+    hotkeyStatus,
+    on,
+    saveLayout,
+    search,
+    showCapture,
+  } from './lib/api'
+  import { resolve, snapshot } from './lib/paste'
+  import { toast } from './lib/toasts.svelte'
+  import type { CaptureResult, Item, MapData } from './lib/types'
   import EmptyState from './components/EmptyState.svelte'
+  import ItemPanel from './components/ItemPanel.svelte'
+  import MapView from './components/Map.svelte'
   import SettingsDialog from './components/SettingsDialog.svelte'
+  import Toasts from './components/Toasts.svelte'
 
   let hotkey = $state('Ctrl+Alt+V')
   let settingsOpen = $state(false)
+  let data = $state<MapData | null>(null)
+  /** Bumped to rebuild the map from scratch (e.g. after the library changed on disk). */
+  let mapVersion = $state(0)
+  let mapView = $state<MapView>()
+  let selected = $state<string | null>(null)
+  let query = $state('')
+  let matches = $state<string[] | null>(null)
+  let searchInput = $state<HTMLInputElement>()
+
+  const itemsById = $derived(new Map((data?.items ?? []).map((item) => [item.id, item])))
 
   async function refreshHotkey() {
     const status = await hotkeyStatus()
     if (status.trigger) hotkey = status.trigger
   }
 
+  async function loadMap() {
+    data = await getMap()
+    mapVersion++
+  }
+
+  function onItemAdded(item: Item) {
+    if (!data || itemsById.has(item.id)) return
+    const wasEmpty = data.items.length === 0
+    data.items.push(item)
+    // An empty library shows the welcome screen instead of the map; the map then mounts with
+    // this first item. Otherwise the live map adds it (with a pulse).
+    if (!wasEmpty) mapView?.addItem(item)
+  }
+
+  // Search as you type; everything that doesn't match is dimmed on the map.
+  let searchTimer: ReturnType<typeof setTimeout> | undefined
+  $effect(() => {
+    const current = query.trim()
+    clearTimeout(searchTimer)
+    if (!current) {
+      matches = null
+      return
+    }
+    searchTimer = setTimeout(async () => {
+      const ids = await search(current)
+      if (query.trim() === current) matches = ids
+    }, 150)
+  })
+
+  function onSearchKey(event: KeyboardEvent) {
+    if (event.key === 'Enter' && matches?.length) selected = matches[0]
+    if (event.key === 'Escape') {
+      query = ''
+      searchInput?.blur()
+    }
+  }
+
+  function report(result: CaptureResult, retryAsSecret?: () => Promise<CaptureResult>) {
+    if (result.status === 'saved') toast(`Saved “${result.title}”`)
+    else if (result.status === 'duplicate')
+      toast(`Already saved as “${result.title}”`, { label: 'Show', run: () => (selected = result.id) })
+    else if (retryAsSecret)
+      toast(`Not saved: this looks like ${result.reason}.`, {
+        label: 'Save anyway',
+        run: async () => report(await retryAsSecret()),
+      })
+  }
+
+  /** Whether the event happened inside one of these elements (e.g. the search box). */
+  function isTyping(target: EventTarget | null, selector: string): boolean {
+    return target instanceof Element && target.closest(selector) !== null
+  }
+
+  // Ctrl+V on the map saves straight away, without the capture window.
+  async function onpaste(event: ClipboardEvent) {
+    if (!event.clipboardData || isTyping(event.target, 'input, textarea, dialog')) return
+    event.preventDefault()
+    const pasted = await resolve(snapshot(event.clipboardData))
+    try {
+      if (pasted?.kind === 'text') report(await captureText(pasted.text), () => captureText(pasted.text, true))
+      else if (pasted?.kind === 'blob') report(await captureBytes(pasted.blob, pasted.name))
+      else if (pasted?.kind === 'path') report(await captureFile(pasted.path))
+    } catch (e) {
+      toast(`Couldn't save: ${e}`)
+    }
+  }
+
+  function onkeydown(event: KeyboardEvent) {
+    const typing = isTyping(event.target, 'input, textarea')
+    if (event.key === 'Escape' && !typing) selected = null
+    if (event.key === '/' && !typing) {
+      event.preventDefault()
+      searchInput?.focus()
+    }
+  }
+
   onMount(() => {
     refreshHotkey()
+    loadMap()
     // The portal may still be waiting for the user to approve the shortcut at startup.
     const timer = setTimeout(refreshHotkey, 3000)
-    return () => clearTimeout(timer)
+    const unsubscribers = [on<Item>('item-added', onItemAdded), on('library-changed', loadMap)]
+    return () => {
+      clearTimeout(timer)
+      unsubscribers.forEach((u) => u.then((off) => off()))
+    }
   })
 </script>
+
+<svelte:window {onpaste} {onkeydown} />
 
 <div class="app">
   <header>
     <span class="brand">Plexus</span>
+    {#if data?.items.length}
+      <div class="search">
+        <input
+          bind:this={searchInput}
+          bind:value={query}
+          onkeydown={onSearchKey}
+          type="search"
+          placeholder="Search  /"
+          aria-label="Search"
+        />
+        {#if matches}<span class="count">{matches.length} found</span>{/if}
+      </div>
+    {/if}
     <div class="actions">
       <button onclick={showCapture}>Add <kbd>{hotkey}</kbd></button>
-      <button onclick={() => (settingsOpen = true)} aria-label="Settings">Settings</button>
+      <button onclick={() => (settingsOpen = true)}>Settings</button>
     </div>
   </header>
+
   <main>
-    <EmptyState {hotkey} />
+    {#if data && data.items.length}
+      {#key mapVersion}
+        <MapView
+          bind:this={mapView}
+          {data}
+          {selected}
+          {matches}
+          onselect={(id) => (selected = id)}
+          onplaced={(positions) => saveLayout(positions)}
+        />
+      {/key}
+      {#if selected && itemsById.has(selected)}
+        <ItemPanel
+          id={selected}
+          items={itemsById}
+          edges={data.edges}
+          onselect={(id) => (selected = id)}
+          onclose={() => (selected = null)}
+        />
+      {/if}
+    {:else if data}
+      <EmptyState {hotkey} />
+    {/if}
+    <Toasts />
   </main>
 </div>
 
@@ -52,7 +198,7 @@
   header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: 16px;
     padding: 10px 16px;
     border-bottom: 1px solid var(--border);
     background: var(--surface);
@@ -63,7 +209,37 @@
     letter-spacing: 0.02em;
   }
 
+  .search {
+    flex: 1;
+    max-width: 420px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .search input {
+    flex: 1;
+    padding: 5px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-2);
+    color: var(--text);
+    font: inherit;
+    outline: none;
+  }
+
+  .search input:focus {
+    border-color: var(--accent);
+  }
+
+  .count {
+    color: var(--text-muted);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
   .actions {
+    margin-left: auto;
     display: flex;
     gap: 8px;
   }
@@ -86,5 +262,6 @@
     flex: 1;
     min-height: 0;
     position: relative;
+    overflow: hidden;
   }
 </style>

@@ -62,3 +62,24 @@ export interface ItemDetail extends Item {
   /** Absolute path of the original file, if any. */
   assetFile: string | null
 }
+
+export interface Edge {
+  src: string
+  dst: string
+  /** "similar" for links found by meaning; typed links come with AI enrichment. */
+  kind: string
+  weight: number
+  reason: string | null
+}
+
+export interface Position {
+  id: string
+  x: number
+  y: number
+}
+
+export interface MapData {
+  items: Item[]
+  edges: Edge[]
+  positions: Position[]
+}

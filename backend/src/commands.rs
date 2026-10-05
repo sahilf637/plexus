@@ -6,6 +6,7 @@ use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{AppHandle, State};
 
 use crate::capture::{self, CaptureResult, Preview, clipboard, hotkey, save};
+use crate::db::graph;
 use crate::db::items::{self, Item};
 use crate::error::{Error, Result};
 use crate::settings::Settings;
@@ -105,10 +106,61 @@ pub struct ItemDetail {
 
 #[tauri::command]
 pub fn get_item(state: State<'_, AppState>, id: String) -> Result<ItemDetail> {
-    let item = state.db.with(|conn| items::get(conn, &id))?.ok_or_else(|| Error::Invalid(format!("no item {id}")))?;
+    let item = find_item(&state, &id)?;
     let body = state.library.read_note(&state.library.absolute(&item.path))?.body;
     let asset_file = item.asset_path.as_deref().map(|p| state.library.absolute(p));
     Ok(ItemDetail { item, body, asset_file })
+}
+
+/// Everything the map draws: items, edges and saved positions.
+#[derive(serde::Serialize)]
+pub struct MapData {
+    items: Vec<Item>,
+    edges: Vec<graph::Edge>,
+    positions: Vec<graph::Position>,
+}
+
+#[tauri::command]
+pub fn get_map(state: State<'_, AppState>) -> Result<MapData> {
+    state.db.with(|conn| {
+        Ok(MapData { items: items::all(conn)?, edges: graph::edges(conn)?, positions: graph::positions(conn)? })
+    })
+}
+
+#[tauri::command]
+pub fn save_layout(state: State<'_, AppState>, positions: Vec<graph::Position>) -> Result<()> {
+    state.db.with(|conn| graph::save_positions(conn, &positions))
+}
+
+/// Item ids matching the query, best first.
+#[tauri::command]
+pub fn search(state: State<'_, AppState>, query: String) -> Result<Vec<String>> {
+    state.db.with(|conn| graph::search(conn, &query, 50))
+}
+
+/// Opens the item's original file (or, for notes without one, the note itself) in the
+/// default app.
+#[tauri::command]
+pub fn open_item_file(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<()> {
+    use tauri_plugin_opener::OpenerExt;
+    let item = find_item(&state, &id)?;
+    let path = state.library.absolute(item.asset_path.as_deref().unwrap_or(&item.path));
+    app.opener().open_path(path.to_string_lossy(), None::<&str>).map_err(|e| Error::Invalid(e.to_string()))
+}
+
+/// Opens a link item's web page in the browser.
+#[tauri::command]
+pub fn open_source(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<()> {
+    use tauri_plugin_opener::OpenerExt;
+    let url = find_item(&state, &id)?.source_url.ok_or_else(|| Error::Invalid("this item has no link".into()))?;
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err(Error::Invalid("only web links can be opened".into()));
+    }
+    app.opener().open_url(url, None::<&str>).map_err(|e| Error::Invalid(e.to_string()))
+}
+
+fn find_item(state: &AppState, id: &str) -> Result<Item> {
+    state.db.with(|conn| items::get(conn, id))?.ok_or_else(|| Error::Invalid(format!("no item {id}")))
 }
 
 /// Everything in the index, for the map.

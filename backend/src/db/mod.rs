@@ -2,6 +2,7 @@
 //! search, edges, layout). Everything here can be rebuilt from the note files, so the file may
 //! be deleted at any time.
 
+pub mod graph;
 pub mod items;
 
 use std::path::Path;

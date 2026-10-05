@@ -1,7 +1,8 @@
 // In-memory stand-in for the Rust backend, used by `npm run dev:ui`. Detection here is a rough
 // approximation, good enough to exercise the UI; the real rules live in Rust.
 
-import type { CaptureResult, HotkeyStatus, Item, ItemDetail, Kind, Preview, Settings } from '../types'
+import type { CaptureResult, HotkeyStatus, Item, ItemDetail, Kind, MapData, Position, Preview, Settings } from '../types'
+import { sampleItems } from './samples'
 
 let settings: Settings = {
   libraryPath: '~/Plexus',
@@ -10,7 +11,8 @@ let settings: Settings = {
   startAtLogin: true,
 }
 
-const items: ItemDetail[] = []
+const items: ItemDetail[] = sampleItems()
+const positions = new Map<string, Position>()
 
 function addItem(title: string, kind: Kind, body: string): CaptureResult {
   const item: ItemDetail = {
@@ -96,6 +98,17 @@ const commands: Record<string, Command> = {
     return addItem(name, kind, `${name}-${Date.now()}`)
   },
   list_items: (): Item[] => items,
+  get_map: (): MapData => ({ items, edges: [], positions: [...positions.values()] }),
+  save_layout: (args) => (args.positions as Position[]).forEach((p) => positions.set(p.id, p)),
+  search: (args) => {
+    const words = String(args.query).toLowerCase().split(/\W+/).filter(Boolean)
+    if (!words.length) return []
+    return items
+      .filter((i) => words.every((w) => `${i.title} ${i.body}`.toLowerCase().includes(w)))
+      .map((i) => i.id)
+  },
+  open_item_file: () => {},
+  open_source: (args) => void window.open(items.find((i) => i.id === args.id)?.sourceUrl ?? '', '_blank'),
   get_item: (args): ItemDetail => {
     const item = items.find((i) => i.id === args.id)
     if (!item) throw new Error(`no item ${args.id}`)
