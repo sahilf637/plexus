@@ -30,7 +30,7 @@ export function sampleItems(): ItemDetail[] {
     assetHash: null,
     mime: kind === 'image' ? 'image/png' : kind === 'file' ? 'application/pdf' : null,
     size: null,
-    status: 'pending',
+    status: 'linked',
     body,
     assetFile: null,
   }))

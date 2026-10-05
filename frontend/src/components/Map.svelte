@@ -28,6 +28,14 @@
     map?.setEdges(edges)
   }
 
+  export function settle(id: string) {
+    map?.settle(id)
+  }
+
+  export function tidy(): Promise<void> {
+    return map?.tidy() ?? Promise.resolve()
+  }
+
   onMount(() => {
     map = new MapController(container!, { select: (id) => onselect(id), placed: (p) => onplaced(p) })
     map.load($state.snapshot(data))

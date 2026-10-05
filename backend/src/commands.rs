@@ -132,10 +132,10 @@ pub fn save_layout(state: State<'_, AppState>, positions: Vec<graph::Position>) 
     state.db.with(|conn| graph::save_positions(conn, &positions))
 }
 
-/// Item ids matching the query, best first.
+/// Item ids matching the query by words or by meaning, best first.
 #[tauri::command]
 pub fn search(state: State<'_, AppState>, query: String) -> Result<Vec<String>> {
-    state.db.with(|conn| graph::search(conn, &query, 50))
+    crate::pipeline::search::hybrid(&state, &query, 50)
 }
 
 /// Opens the item's original file (or, for notes without one, the note itself) in the

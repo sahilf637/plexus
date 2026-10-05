@@ -150,6 +150,14 @@ pub fn delete(conn: &mut Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn set_status(conn: &Connection, id: &str, status: Status, pipeline_version: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE items SET status = ?2, pipeline_version = ?3 WHERE id = ?1",
+        params![id, status.as_str(), pipeline_version],
+    )?;
+    Ok(())
+}
+
 pub fn get(conn: &Connection, id: &str) -> Result<Option<Item>> {
     let sql = format!("SELECT {COLUMNS} FROM items WHERE id = ?1");
     Ok(conn.query_row(&sql, [id], from_row).optional()?)

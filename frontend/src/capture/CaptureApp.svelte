@@ -12,7 +12,7 @@
   } from '../lib/api'
   import { isPlainText, resolve, snapshot } from '../lib/paste'
   import { formatBytes, kindLabel } from '../lib/kinds'
-  import type { CaptureResult, Kind, Preview } from '../lib/types'
+  import type { CaptureResult, ItemLinked, Kind, Preview } from '../lib/types'
 
   /** An image or file to save instead of text. */
   type Attachment = {
@@ -28,6 +28,9 @@
   type Phase = 'edit' | 'saving' | 'secret' | 'saved' | 'error'
 
   const CLOSE_AFTER_SAVE_MS = 1400
+  /** How long to wait for links before closing anyway, and how long to show them. */
+  const WAIT_FOR_LINKS_MS = 3000
+  const SHOW_LINKS_MS = 1800
 
   let text = $state('')
   let attachment = $state<Attachment | null>(null)
@@ -37,6 +40,9 @@
   let savedTitle = $state('')
   /** The capture was already in Plexus, so nothing new was saved. */
   let duplicate = $state(false)
+  let savedId = $state<string | null>(null)
+  /** Titles of what the saved item linked to, once known. */
+  let linkedTo = $state<string[] | null>(null)
   let errorMessage = $state('')
   let dragOver = $state(false)
   let textarea = $state<HTMLTextAreaElement>()
@@ -56,6 +62,8 @@
     clearTimeout(closeTimer)
     if (attachment?.thumbnail) URL.revokeObjectURL(attachment.thumbnail)
     text = ''
+    savedId = null
+    linkedTo = null
     attachment = null
     preview = null
     phase = 'edit'
@@ -161,7 +169,13 @@
       savedTitle = result.title
       duplicate = result.status === 'duplicate'
       phase = 'saved'
-      closeTimer = setTimeout(close, CLOSE_AFTER_SAVE_MS)
+      if (duplicate) {
+        closeTimer = setTimeout(close, CLOSE_AFTER_SAVE_MS)
+      } else {
+        // Stay open briefly to show what it linked to.
+        savedId = result.id
+        closeTimer = setTimeout(close, WAIT_FOR_LINKS_MS)
+      }
     } catch (e) {
       errorMessage = String(e)
       phase = 'error'
@@ -192,10 +206,18 @@
     }
   }
 
+  function onItemLinked(event: ItemLinked) {
+    if (phase !== 'saved' || event.id !== savedId) return
+    linkedTo = event.related.slice(0, 3).map((r) => r.title)
+    clearTimeout(closeTimer)
+    closeTimer = setTimeout(close, SHOW_LINKS_MS)
+  }
+
   onMount(() => {
     reset()
     const unsubscribers = [
       on('capture-opened', reset),
+      on<ItemLinked>('item-linked', onItemLinked),
       onFileDrop({
         over: (over) => (dragOver = over),
         drop: (paths) => paths[0] && phase === 'edit' && attachPath(paths[0]),
@@ -227,9 +249,18 @@
     <div class="done">
       <div class="check" aria-hidden="true">✓</div>
       <p class="saved-title">{savedTitle}</p>
-      <p class="muted">
-        {duplicate ? 'Already in Plexus, so nothing new was saved.' : 'Saved. Plexus is linking it to your other items.'}
-      </p>
+      {#if duplicate}
+        <p class="muted">Already in Plexus, so nothing new was saved.</p>
+      {:else if linkedTo === null}
+        <p class="muted">Saved. Finding related items…</p>
+      {:else if linkedTo.length}
+        <p class="muted">Linked to</p>
+        <ul class="linked">
+          {#each linkedTo as title}<li>{title}</li>{/each}
+        </ul>
+      {:else}
+        <p class="muted">Saved. Nothing related yet; it will link up as you add more.</p>
+      {/if}
     </div>
   {:else}
     <div class="body">
@@ -454,6 +485,22 @@
 
   .done p {
     margin: 0;
+  }
+
+  .linked {
+    list-style: none;
+    margin: 4px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-width: 100%;
+  }
+
+  .linked li {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .muted,

@@ -83,3 +83,13 @@ export interface MapData {
   edges: Edge[]
   positions: Position[]
 }
+
+/** Sent when the background pipeline has linked an item. */
+export interface ItemLinked {
+  id: string
+  status: ItemStatus
+  /** Every link touching this item, now. */
+  edges: Edge[]
+  /** Linked items, closest first. */
+  related: { id: string; title: string; weight: number }[]
+}

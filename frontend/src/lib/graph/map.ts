@@ -4,8 +4,12 @@
 import Graph from 'graphology'
 import Sigma from 'sigma'
 import EdgeCurveProgram from '@sigma/edge-curve'
+import FA2Layout from 'graphology-layout-forceatlas2/worker'
+import forceAtlas2 from 'graphology-layout-forceatlas2'
+import { animateNodes } from 'sigma/utils'
 import type { EdgeDisplayData, NodeDisplayData, PartialButFor } from 'sigma/types'
 import type { Settings } from 'sigma/settings'
+import { linkStrength } from '../kinds'
 import type { Edge, Item, MapData, Position } from '../types'
 
 export interface MapEvents {
@@ -29,6 +33,8 @@ const PULSE_MS = 2500
 /** New items without links are laid out on a sunflower spiral, in the order they arrived. */
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5))
 const SPIRAL_SPACING = 10
+const SETTLE_MS = 600
+const TIDY_MS = 2500
 
 function cssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
@@ -142,9 +148,54 @@ export class MapController {
     for (const edge of edges) {
       if (!this.graph.hasNode(edge.src) || !this.graph.hasNode(edge.dst)) continue
       if (this.graph.hasEdge(edge.src, edge.dst)) continue
-      this.graph.addEdge(edge.src, edge.dst, { size: 0.5 + 2 * edge.weight, color: this.colors.edge })
+      const strength = linkStrength(edge.weight)
+      this.graph.addEdge(edge.src, edge.dst, { size: 0.6 + 2.4 * strength, weight: strength, color: this.colors.edge })
     }
     this.graph.forEachNode((node) => this.graph.setNodeAttribute(node, 'size', nodeSize(this.graph.degree(node))))
+  }
+
+  /** Moves a newly linked item next to the items it's linked to (closer to stronger links). */
+  settle(id: string) {
+    if (!this.graph.hasNode(id)) return
+    let x = 0
+    let y = 0
+    let total = 0
+    this.graph.forEachEdge(id, (_edge, attrs, source, target) => {
+      const other = this.graph.getNodeAttributes(source === id ? target : source)
+      const weight = (attrs.weight as number) ?? 1
+      x += other.x * weight
+      y += other.y * weight
+      total += weight
+    })
+    if (!total) return
+    // Next to the neighbours rather than on top of them.
+    const angle = Math.random() * 2 * Math.PI
+    const offset = SPIRAL_SPACING * 0.8
+    const target = { x: x / total + offset * Math.cos(angle), y: y / total + offset * Math.sin(angle) }
+    animateNodes(this.graph, { [id]: target }, { duration: SETTLE_MS }, () => this.events.placed([{ id, ...target }]))
+  }
+
+  /** Lays the whole map out again by its links, so related items gather into groups. */
+  tidy(): Promise<void> {
+    const layout = new FA2Layout(this.graph, {
+      settings: {
+        ...forceAtlas2.inferSettings(this.graph),
+        barnesHutOptimize: this.graph.order > 400,
+        // Room between linked items, so groups stay readable rather than collapsing into a dot.
+        scalingRatio: 40,
+        adjustSizes: true,
+        slowDown: 3,
+      },
+      getEdgeWeight: 'weight',
+    })
+    layout.start()
+    return new Promise((done) =>
+      setTimeout(() => {
+        layout.kill()
+        this.events.placed(this.positions())
+        done()
+      }, TIDY_MS),
+    )
   }
 
   select(id: string | null) {

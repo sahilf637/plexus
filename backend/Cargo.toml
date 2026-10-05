@@ -39,6 +39,10 @@ serde_norway = "0.9"
 ulid = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 sha2 = "0.11"
+pulldown-cmark = { version = "0.13", default-features = false }
+# Local embeddings: runs the bundled ONNX model. No model downloads at run time.
+fastembed = { version = "7", default-features = false }
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "download-binaries", "tls-rustls"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Global shortcuts on Wayland go through the desktop portal.

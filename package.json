@@ -8,10 +8,13 @@
     "frontend"
   ],
   "scripts": {
+    "predev": "node scripts/fetch-model.mjs",
     "dev": "tauri dev",
+    "prebuild": "node scripts/fetch-model.mjs",
     "build": "tauri build",
     "dev:ui": "npm run dev -w frontend",
     "check": "npm run check -w frontend",
+    "fetch-model": "node scripts/fetch-model.mjs",
     "tauri": "tauri"
   },
   "devDependencies": {

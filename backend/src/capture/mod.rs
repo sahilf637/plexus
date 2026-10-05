@@ -45,6 +45,7 @@ pub fn preview_text(text: &str) -> Preview {
 pub fn announce(app: &AppHandle, saved: save::Saved) -> CaptureResult {
     if let Some(item) = &saved.item {
         let _ = app.emit("item-added", item);
+        app.state::<AppState>().pipeline.enqueue(&item.id);
     }
     saved.result
 }

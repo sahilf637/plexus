@@ -124,11 +124,13 @@ Run from the repo root (npm workspace). Needs Node 20+, Rust 1.90+, and
 
 ```bash
 npm install          # install all dependencies
+npm run fetch-model  # download the bundled embedding model (also runs before dev/build)
 npm run dev          # desktop app with hot reload (Vite on port 1430)
 npm run dev:ui       # UI only, in a browser, against the in-memory mock backend
 npm run check        # typecheck the frontend
 npm run build        # production bundle
 cd backend && cargo test && cargo clippy --all-targets
+cd backend && cargo test -- --ignored --nocapture   # tests that run the real model
 ```
 
 `plexus --capture` opens the capture window (forwarded to the running instance);

@@ -13,7 +13,7 @@
   } from './lib/api'
   import { resolve, snapshot } from './lib/paste'
   import { toast } from './lib/toasts.svelte'
-  import type { CaptureResult, Item, MapData } from './lib/types'
+  import type { CaptureResult, Item, ItemLinked, MapData } from './lib/types'
   import EmptyState from './components/EmptyState.svelte'
   import ItemPanel from './components/ItemPanel.svelte'
   import MapView from './components/Map.svelte'
@@ -50,6 +50,25 @@
     // An empty library shows the welcome screen instead of the map; the map then mounts with
     // this first item. Otherwise the live map adds it (with a pulse).
     if (!wasEmpty) mapView?.addItem(item)
+  }
+
+  function onItemLinked(event: ItemLinked) {
+    if (!data) return
+    const item = data.items.find((i) => i.id === event.id)
+    if (!item) return
+    const hadLinks = data.edges.some((e) => e.src === event.id || e.dst === event.id)
+    item.status = event.status
+    data.edges = [...data.edges.filter((e) => e.src !== event.id && e.dst !== event.id), ...event.edges]
+    mapView?.setEdges(data.edges)
+    // A newly linked item moves next to what it's related to; settled items stay put.
+    if (!hadLinks && event.edges.length) mapView?.settle(event.id)
+  }
+
+  let tidying = $state(false)
+  async function tidy() {
+    tidying = true
+    await mapView?.tidy()
+    tidying = false
   }
 
   // Search as you type; everything that doesn't match is dimmed on the map.
@@ -119,7 +138,11 @@
     loadMap()
     // The portal may still be waiting for the user to approve the shortcut at startup.
     const timer = setTimeout(refreshHotkey, 3000)
-    const unsubscribers = [on<Item>('item-added', onItemAdded), on('library-changed', loadMap)]
+    const unsubscribers = [
+      on<Item>('item-added', onItemAdded),
+      on<ItemLinked>('item-linked', onItemLinked),
+      on('library-changed', loadMap),
+    ]
     return () => {
       clearTimeout(timer)
       unsubscribers.forEach((u) => u.then((off) => off()))
@@ -146,6 +169,11 @@
       </div>
     {/if}
     <div class="actions">
+      {#if data?.edges.length}
+        <button onclick={tidy} disabled={tidying} title="Lay the map out again so related items group together">
+          {tidying ? 'Tidying…' : 'Tidy layout'}
+        </button>
+      {/if}
       <button onclick={showCapture}>Add <kbd>{hotkey}</kbd></button>
       <button onclick={() => (settingsOpen = true)}>Settings</button>
     </div>

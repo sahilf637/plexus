@@ -1,7 +1,7 @@
 // In-memory stand-in for the Rust backend, used by `npm run dev:ui`. Detection here is a rough
 // approximation, good enough to exercise the UI; the real rules live in Rust.
 
-import type { CaptureResult, HotkeyStatus, Item, ItemDetail, Kind, MapData, Position, Preview, Settings } from '../types'
+import type { CaptureResult, Edge, HotkeyStatus, Item, ItemDetail, ItemLinked, Kind, MapData, Position, Preview, Settings } from '../types'
 import { sampleItems } from './samples'
 
 let settings: Settings = {
@@ -13,6 +13,29 @@ let settings: Settings = {
 
 const items: ItemDetail[] = sampleItems()
 const positions = new Map<string, Position>()
+
+// Stand-in for linking by meaning: items sharing longer words are "related".
+const words = (item: ItemDetail) => new Set(`${item.title} ${item.body}`.toLowerCase().match(/[a-z]{5,}/g) ?? [])
+
+function linksFor(item: ItemDetail): Edge[] {
+  const mine = words(item)
+  return items
+    .filter((other) => other.id !== item.id)
+    .map((other) => {
+      const shared = [...words(other)].filter((w) => mine.has(w)).length
+      return { src: item.id, dst: other.id, kind: 'similar', weight: Math.min(0.85, 0.55 + 0.08 * shared), reason: null, shared }
+    })
+    .filter((e) => e.shared > 0)
+    .map(({ shared: _, ...edge }) => edge)
+}
+
+function allEdges(): Edge[] {
+  const seen = new Set<string>()
+  return items.flatMap(linksFor).filter((e) => {
+    const key = [e.src, e.dst].sort().join('|')
+    return !seen.has(key) && seen.add(key)
+  })
+}
 
 function addItem(title: string, kind: Kind, body: string): CaptureResult {
   const item: ItemDetail = {
@@ -36,6 +59,12 @@ function addItem(title: string, kind: Kind, body: string): CaptureResult {
   if (existing) return { status: 'duplicate', id: existing.id, title: existing.title }
   items.push(item)
   emit('item-added', item)
+  setTimeout(() => {
+    item.status = 'linked'
+    const edges = linksFor(item)
+    const related = edges.map((e) => ({ id: e.dst, title: items.find((i) => i.id === e.dst)!.title, weight: e.weight }))
+    emit('item-linked', { id: item.id, status: 'linked', edges, related } satisfies ItemLinked)
+  }, 500)
   return { status: 'saved', id: item.id, title, kind }
 }
 
@@ -98,7 +127,7 @@ const commands: Record<string, Command> = {
     return addItem(name, kind, `${name}-${Date.now()}`)
   },
   list_items: (): Item[] => items,
-  get_map: (): MapData => ({ items, edges: [], positions: [...positions.values()] }),
+  get_map: (): MapData => ({ items, edges: allEdges(), positions: [...positions.values()] }),
   save_layout: (args) => (args.positions as Position[]).forEach((p) => positions.set(p.id, p)),
   search: (args) => {
     const words = String(args.query).toLowerCase().split(/\W+/).filter(Boolean)

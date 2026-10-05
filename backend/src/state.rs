@@ -3,6 +3,7 @@
 use crate::capture::hotkey::Hotkey;
 use crate::db::Db;
 use crate::library::Library;
+use crate::pipeline::Pipeline;
 use crate::settings::SettingsStore;
 
 pub struct AppState {
@@ -10,4 +11,5 @@ pub struct AppState {
     pub hotkey: Hotkey,
     pub library: Library,
     pub db: Db,
+    pub pipeline: Pipeline,
 }

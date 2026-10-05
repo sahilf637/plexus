@@ -10,6 +10,8 @@ pub enum Error {
     Tauri(#[from] tauri::Error),
     #[error("index: {0}")]
     Db(#[from] rusqlite::Error),
+    #[error("embedding: {0}")]
+    Embed(String),
     #[error("clipboard: {0}")]
     Clipboard(#[from] arboard::Error),
     #[error("couldn't encode the image: {0}")]

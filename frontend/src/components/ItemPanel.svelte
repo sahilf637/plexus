@@ -2,7 +2,7 @@
   import DOMPurify from 'dompurify'
   import { marked } from 'marked'
   import { fileUrl, getItem, openItemFile, openSource } from '../lib/api'
-  import { formatBytes, kindLabel } from '../lib/kinds'
+  import { formatBytes, kindLabel, linkStrength } from '../lib/kinds'
   import type { Edge, Item, ItemDetail } from '../lib/types'
 
   let {
@@ -98,12 +98,14 @@
               <button onclick={() => onselect(item.id)}>
                 <span class="dot" style:background={`var(--kind-${item.kind})`}></span>
                 <span class="title">{item.title}</span>
-                <span class="muted">{Math.round(edge.weight * 100)}%</span>
+                <span class="strength" title="How closely related">
+                  <span style:width={`${linkStrength(edge.weight) * 100}%`}></span>
+                </span>
               </button>
             </li>
           {/each}
         </ul>
-      {:else if detail.status === 'pending'}
+      {:else if items.get(id)?.status === 'pending'}
         <p class="muted">Finding related items…</p>
       {:else}
         <p class="muted">Nothing related yet.</p>
@@ -257,5 +259,20 @@
 
   .error {
     color: var(--danger);
+  }
+
+  .strength {
+    width: 48px;
+    height: 4px;
+    flex-shrink: 0;
+    border-radius: 2px;
+    background: var(--surface-2);
+    overflow: hidden;
+  }
+
+  .strength span {
+    display: block;
+    height: 100%;
+    background: var(--accent);
   }
 </style>

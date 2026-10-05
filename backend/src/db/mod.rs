@@ -2,6 +2,7 @@
 //! search, edges, layout). Everything here can be rebuilt from the note files, so the file may
 //! be deleted at any time.
 
+pub mod chunks;
 pub mod graph;
 pub mod items;
 
@@ -74,6 +75,13 @@ const MIGRATIONS: &[&str] = &[r#"
         key   TEXT PRIMARY KEY,
         value TEXT NOT NULL
     );
+"#, r#"
+    -- Vectors are compared by cosine distance (similarity = 1 - distance). Nothing was embedded
+    -- under version 1, so the table can simply be recreated.
+    DROP TABLE vec_chunks;
+    DELETE FROM chunks;
+    CREATE VIRTUAL TABLE vec_chunks USING vec0(embedding float[384] distance_metric=cosine);
+    UPDATE items SET status = 'pending';
 "#];
 
 pub struct Db {

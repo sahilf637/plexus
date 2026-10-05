@@ -33,6 +33,18 @@ pub fn edges(conn: &Connection) -> Result<Vec<Edge>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// The links touching one item.
+pub fn edges_of(conn: &Connection, id: &str) -> Result<Vec<Edge>> {
+    let mut stmt = conn.prepare(
+        "SELECT src, dst, kind, weight, reason FROM edges
+         WHERE status != 'rejected' AND (src = ?1 OR dst = ?1) ORDER BY weight DESC",
+    )?;
+    let rows = stmt.query_map([id], |row| {
+        Ok(Edge { src: row.get(0)?, dst: row.get(1)?, kind: row.get(2)?, weight: row.get(3)?, reason: row.get(4)? })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 pub fn positions(conn: &Connection) -> Result<Vec<Position>> {
     let mut stmt = conn.prepare("SELECT item_id, x, y FROM layout")?;
     let rows = stmt.query_map([], |row| Ok(Position { id: row.get(0)?, x: row.get(1)?, y: row.get(2)? }))?;

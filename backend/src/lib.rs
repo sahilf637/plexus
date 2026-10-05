@@ -3,6 +3,7 @@ mod commands;
 mod db;
 mod error;
 mod library;
+mod pipeline;
 mod settings;
 mod state;
 mod tray;
@@ -14,6 +15,8 @@ use tauri_plugin_autostart::MacosLauncher;
 use capture::hotkey::{self, Hotkey};
 use db::Db;
 use library::Library;
+use pipeline::Pipeline;
+use pipeline::embed::{self, Embedder};
 use settings::{Settings, SettingsStore};
 use state::AppState;
 
@@ -45,8 +48,9 @@ pub fn run() {
             let db = Db::open(&library.index_path())?;
             // Lets the map show images straight from the library folder (and nothing else).
             app.asset_protocol_scope().allow_directory(library.root(), true)?;
-            app.manage(AppState { settings, hotkey: Hotkey::default(), library, db });
-            reconcile_in_background(app.handle());
+            let (pipeline, queue) = Pipeline::new(Embedder::new(find_model(app.handle())));
+            app.manage(AppState { settings, hotkey: Hotkey::default(), library, db, pipeline });
+            start_background_work(app.handle(), queue);
             tray::create(app.handle())?;
             hotkey::register(app.handle());
             let args: Vec<String> = std::env::args().collect();
@@ -85,8 +89,9 @@ pub fn run() {
         .expect("error while running Plexus");
 }
 
-/// Catches the index up with the library folder without holding up startup.
-fn reconcile_in_background(app: &AppHandle) {
+/// Catches the index up with the library folder, then keeps linking items as they arrive. Runs
+/// on its own thread so startup doesn't wait for it.
+fn start_background_work(app: &AppHandle, queue: std::sync::mpsc::Receiver<String>) {
     let app = app.clone();
     std::thread::spawn(move || {
         let state = app.state::<AppState>();
@@ -98,7 +103,16 @@ fn reconcile_in_background(app: &AppHandle) {
             }
             Err(e) => tracing::error!("couldn't read the library: {e}"),
         }
+        pipeline::run(app.clone(), queue);
     });
+}
+
+/// The bundled embedding model: in the app's resources, or (in development) in the source tree.
+fn find_model(app: &AppHandle) -> Option<std::path::PathBuf> {
+    let bundled = app.path().resource_dir().ok().map(|dir| dir.join(embed::MODEL_DIR));
+    let source_tree = cfg!(debug_assertions)
+        .then(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources").join(embed::MODEL_DIR));
+    Embedder::find(bundled.into_iter().chain(source_tree))
 }
 
 /// Decides which window to show for a launch (or a second launch forwarded to us).

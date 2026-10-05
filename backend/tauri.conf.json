@@ -35,7 +35,10 @@
       }
     ],
     "security": {
-      "assetProtocol": { "enable": true, "scope": [] },
+      "assetProtocol": {
+        "enable": true,
+        "scope": []
+      },
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: http://asset.localhost; connect-src ipc: http://ipc.localhost"
     }
   },
@@ -50,6 +53,9 @@
       "icons/icon.ico"
     ],
     "category": "Productivity",
-    "shortDescription": "Copy anything. Your second brain wires itself."
+    "shortDescription": "Copy anything. Your second brain wires itself.",
+    "resources": {
+      "resources/models/bge-small-en-v1.5/*": "models/bge-small-en-v1.5/"
+    }
   }
 }
