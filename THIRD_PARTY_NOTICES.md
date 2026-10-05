@@ -41,3 +41,9 @@ at build time by `scripts/fetch-model.mjs`.
 
 Runs the embedding model. Microsoft, MIT license (https://github.com/microsoft/onnxruntime),
 linked through the `ort` crate (MIT/Apache-2.0).
+
+## ocrs text recognition models
+
+The bundled OCR models (`text-detection.rten`, `text-recognition.rten`) and the `ocrs` / `rten`
+crates, by Robert Knight (https://github.com/robertknight/ocrs), MIT or Apache-2.0. Downloaded at
+build time by `scripts/fetch-model.mjs`.

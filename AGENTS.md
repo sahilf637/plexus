@@ -9,8 +9,10 @@ See [docs/OVERVIEW.md](docs/OVERVIEW.md) for the product and technical design.
 
 ## Status
 
-Scaffolded; working on milestone M0 ([docs/plans/M0.md](docs/plans/M0.md)). Update this section and
-**Commands** below as soon as the app is scaffolded.
+M0 and M1 are done ([docs/plans/M0.md](docs/plans/M0.md), [docs/plans/M1.md](docs/plans/M1.md)):
+capture, local linking with plain-language reasons, deleting with undo, hand-made links, text
+extraction (files, HTML, PDF/DOCX/EPUB, OCR) and opt-in clipboard watching. Linking is fully
+automatic; there is no accept/reject flow. Next: M2 (LLM enrichment).
 
 ## Principles
 
@@ -74,11 +76,12 @@ frontend/              Svelte 5 + Vite; two entries: index.html (map), capture.h
   src/capture/         capture window
   src/components/      map UI components
 backend/               Tauri v2 crate `plexus`
-  src/library/         note files: paths, frontmatter, originals, reconcile
+  src/library/         note files: paths, frontmatter, originals, reconcile, trash, hand-made links
   src/db/              SQLite index: migrations, items, edges, search
   src/capture/         kind detection, secrets, dedupe, hotkeys, clipboard
-  src/pipeline/        background worker: chunk, embed, link
+  src/pipeline/        background worker: chunk, embed, link, plain-language link reasons
   src/fetch/           URL fetching + article extraction
+  src/extract/         text out of files and images (text, HTML, PDF, DOCX, EPUB, OCR) in the background
 docs/                  product and design docs; plans/ per milestone
 scripts/               fetch-model, seed
 ```
@@ -124,7 +127,7 @@ Run from the repo root (npm workspace). Needs Node 20+, Rust 1.90+, and
 
 ```bash
 npm install          # install all dependencies
-npm run fetch-model  # download the bundled embedding model (also runs before dev/build)
+npm run fetch-model  # download the bundled models: embeddings + OCR (also runs before dev/build)
 npm run dev          # desktop app with hot reload (Vite on port 1430)
 npm run dev:ui       # UI only, in a browser, against the in-memory mock backend
 npm run check        # typecheck the frontend
