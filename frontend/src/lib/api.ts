@@ -45,7 +45,9 @@ export const pastedFiles = (text: string) => call<string[]>('pasted_files', { te
 export const capturePreview = (text: string) => call<Preview>('capture_preview', { text })
 export const captureText = (text: string, force = false) =>
   call<CaptureResult>('capture_text', { text, force })
-export const captureFile = (path: string) => call<CaptureResult>('capture_file', { path })
+/** A file by path, with an optional note about it (`force` keeps a note that looks like a secret). */
+export const captureFile = (path: string, note = '', force = false) =>
+  call<CaptureResult>('capture_file', { path, note, force })
 
 export const listItems = () => call<Item[]>('list_items')
 export const getItem = (id: string) => call<ItemDetail>('get_item', { id })
@@ -62,12 +64,14 @@ export async function fileUrl(path: string): Promise<string> {
   return convertFileSrc(path)
 }
 
-/** Pasted images and files go over as raw bytes, not JSON. */
-export async function captureBytes(blob: Blob, name: string): Promise<CaptureResult> {
+/** Pasted images and files go over as raw bytes, not JSON; the name and note ride in headers. */
+export async function captureBytes(blob: Blob, name: string, note = '', force = false): Promise<CaptureResult> {
   const bytes = new Uint8Array(await blob.arrayBuffer())
   return call<CaptureResult>('capture_bytes', bytes, {
     'x-name': encodeURIComponent(name),
     'x-mime': blob.type,
+    'x-note': encodeURIComponent(note),
+    'x-force': force ? '1' : '0',
   })
 }
 

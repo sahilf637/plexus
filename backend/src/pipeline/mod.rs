@@ -163,7 +163,9 @@ fn embedding_text(item: &Item, body: &str) -> String {
     let body = IMAGE_EMBED.replace_all(body, "");
     let body = body.trim();
     match item.kind {
-        // Until text is extracted from them (M1), images and files only have their names.
+        // Until text is extracted from them (M1), images and files have the user's note, or
+        // else only their names.
+        Kind::Image | Kind::File if !body.is_empty() => body.to_string(),
         Kind::Image | Kind::File => {
             if item.title.chars().filter(|c| c.is_alphabetic()).count() < 3 || item.title.starts_with("Pasted ") {
                 String::new()
@@ -192,6 +194,7 @@ mod tests {
         assert_eq!(embedding_text(&item, "![Whiteboard sketch](w.png)\n"), "Whiteboard sketch");
         item.title = "Pasted image".into();
         assert_eq!(embedding_text(&item, "![Pasted image](p.png)\n"), "");
+        assert_eq!(embedding_text(&item, "![Pasted image](p.png)\n\nOur sprint board\n"), "Our sprint board");
     }
 
     /// Save → chunk → embed → link with the real model, in a scratch library.

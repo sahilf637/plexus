@@ -123,11 +123,12 @@
   async function onpaste(event: ClipboardEvent) {
     if (!event.clipboardData || isTyping(event.target, 'input, textarea, dialog')) return
     event.preventDefault()
-    const pasted = await resolve(snapshot(event.clipboardData))
     try {
-      if (pasted?.kind === 'text') report(await captureText(pasted.text), () => captureText(pasted.text, true))
-      else if (pasted?.kind === 'blob') report(await captureBytes(pasted.blob, pasted.name))
-      else if (pasted?.kind === 'path') report(await captureFile(pasted.path))
+      for (const pasted of await resolve(snapshot(event.clipboardData))) {
+        if (pasted.kind === 'text') report(await captureText(pasted.text), () => captureText(pasted.text, true))
+        else if (pasted.kind === 'blob') report(await captureBytes(pasted.blob, pasted.name))
+        else report(await captureFile(pasted.path))
+      }
     } catch (e) {
       toast(`Couldn't save: ${e}`)
     }
@@ -211,7 +212,7 @@
         />
       {/if}
     {:else if data}
-      <EmptyState {hotkey} />
+      <EmptyState {hotkey} onadd={showCapture} />
     {/if}
     <Toasts />
   </main>

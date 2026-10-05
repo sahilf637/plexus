@@ -48,27 +48,38 @@ pub fn text(library: &Library, db: &Db, text: &str, force: bool) -> Result<Saved
     write(library, db, meta, body, None)
 }
 
-/// An image or file, from bytes (pasted) or from disk (dropped or copied in a file manager).
-pub fn file(library: &Library, db: &Db, name: &str, mime: &str, bytes: &[u8]) -> Result<Saved> {
+/// An image or file, from bytes (pasted) or from disk (dropped or copied in a file manager),
+/// with an optional note about it from the user. The note becomes the body (below the image)
+/// and its first line the title.
+pub fn file(library: &Library, db: &Db, name: &str, mime: &str, bytes: &[u8], note: &str, force: bool) -> Result<Saved> {
+    let note = note.replace("\r\n", "\n");
+    let note = note.trim();
+    if !force && let Some(reason) = secrets::find_secret(note) {
+        return Ok(Saved::not_saved(CaptureResult::Secret { reason }));
+    }
     let asset_hash = library::hash(bytes);
     if let Some(existing) = db.with(|conn| items::find_duplicate(conn, "", Some(&asset_hash)))? {
         return Ok(Saved::not_saved(CaptureResult::Duplicate { id: existing.id, title: existing.title }));
     }
-    let detected = detect::detect_file(name, mime);
-    // No text is extracted yet (OCR, PDF text come in M1), so images embed themselves and
-    // other files have an empty body.
-    let mut meta = new_meta(&detected, library::text_hash(""), None);
+    let mut detected = detect::detect_file(name, mime);
+    if !note.is_empty() {
+        detected.title = detect::detect_text(note).title;
+    }
+    // No text is extracted from the file yet (OCR, PDF text come in M1), so the body is just
+    // the user's note.
+    let body = if note.is_empty() { String::new() } else { format!("{note}\n") };
+    let mut meta = new_meta(&detected, library::text_hash(&body), None);
     meta.asset_hash = Some(asset_hash);
     meta.original_name = Some(name.to_string());
     meta.mime = Some(mime.to_string());
     meta.size = Some(bytes.len() as u64);
-    write(library, db, meta, String::new(), Some((extension(name, mime), bytes)))
+    write(library, db, meta, body, Some((extension(name, mime), bytes)))
 }
 
-pub fn file_from_disk(library: &Library, db: &Db, path: &Path) -> Result<Saved> {
+pub fn file_from_disk(library: &Library, db: &Db, path: &Path, note: &str, force: bool) -> Result<Saved> {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let bytes = fs::read(path)?;
-    file(library, db, &name, super::mime_from_name(&name), &bytes)
+    file(library, db, &name, super::mime_from_name(&name), &bytes, note, force)
 }
 
 fn new_meta(detected: &Detected, hash: String, source: Option<String>) -> NoteMeta {
@@ -102,7 +113,9 @@ fn write(library: &Library, db: &Db, mut meta: NoteMeta, mut body: String, asset
         let name = format!("{stem}.{ext}");
         crate::settings::write_atomic(&path.with_file_name(&name), bytes)?;
         if meta.kind == Kind::Image {
-            body = format!("![{}]({name})\n", meta.title.replace(['[', ']'], ""));
+            // The image first, then the note about it, as the user saw them in the capture window.
+            let embed = format!("![{}]({name})\n", meta.title.replace(['[', ']'], ""));
+            body = if body.is_empty() { embed } else { format!("{embed}\n{body}") };
         }
         meta.asset = Some(name);
     }
@@ -210,7 +223,7 @@ mod tests {
     fn files_are_stored_next_to_their_note() {
         let (_dir, library, db) = setup();
         let png = b"\x89PNG fake image bytes";
-        let item = saved_item(file(&library, &db, "Whiteboard sketch.png", "image/png", png).unwrap());
+        let item = saved_item(file(&library, &db, "Whiteboard sketch.png", "image/png", png, "", false).unwrap());
         assert_eq!(item.kind, Kind::Image);
         let asset = item.asset_path.clone().unwrap();
         assert_eq!(asset.trim_end_matches(".png"), item.path.trim_end_matches(".md"));
@@ -220,16 +233,35 @@ mod tests {
         assert_eq!(note.meta.original_name.as_deref(), Some("Whiteboard sketch.png"));
         assert!(note.body.starts_with("![Whiteboard sketch]("));
 
-        let again = file(&library, &db, "copy.png", "image/png", png).unwrap();
+        let again = file(&library, &db, "copy.png", "image/png", png, "", false).unwrap();
         assert!(matches!(again.result, CaptureResult::Duplicate { .. }));
-        let pasted = saved_item(file(&library, &db, "", "image/png", b"other").unwrap());
+        let pasted = saved_item(file(&library, &db, "", "image/png", b"other", "", false).unwrap());
         assert!(pasted.asset_path.unwrap().ends_with(".png"));
+    }
+
+    #[test]
+    fn a_note_about_an_image_goes_below_it_and_names_it() {
+        let (_dir, library, db) = setup();
+        let note = "Sprint board after planning\r\nThe API work slipped a week.";
+        let item = saved_item(file(&library, &db, "Screenshot 2026.png", "image/png", b"png", note, false).unwrap());
+        assert_eq!(item.title, "Sprint board after planning");
+        let saved = library.read_note(&library.absolute(&item.path)).unwrap();
+        let asset = saved.meta.asset.unwrap();
+        assert_eq!(
+            saved.body,
+            format!("![Sprint board after planning]({asset})\n\nSprint board after planning\nThe API work slipped a week.\n")
+        );
+        assert_eq!(saved.meta.original_name.as_deref(), Some("Screenshot 2026.png"));
+
+        // A secret in the note is caught like in pasted text.
+        let secret = file(&library, &db, "x.png", "image/png", b"x", "key ghp_abcdefghijklmnopqrstuvwxyz0123456789", false).unwrap();
+        assert!(matches!(secret.result, CaptureResult::Secret { .. }));
     }
 
     #[test]
     fn a_rebuilt_index_matches_what_was_saved() {
         let (_dir, library, db) = setup();
-        let item = saved_item(file(&library, &db, "report.pdf", "application/pdf", b"%PDF").unwrap());
+        let item = saved_item(file(&library, &db, "report.pdf", "application/pdf", b"%PDF", "Q3 numbers", false).unwrap());
         drop(db);
         fs::remove_file(library.index_path()).unwrap();
         let db = Db::open(&library.index_path()).unwrap();

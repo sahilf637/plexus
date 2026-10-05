@@ -71,12 +71,12 @@ fn read_and_save_clipboard(state: &AppState) -> Result<Option<save::Saved>> {
     let (library, db) = (&state.library, &state.db);
     if let Some(text) = clipboard::text()? {
         if let Some(path) = clipboard::existing_files(&text).first() {
-            return save::file_from_disk(library, db, path).map(Some);
+            return save::file_from_disk(library, db, path, "", false).map(Some);
         }
         return save::text(library, db, &text, false).map(Some);
     }
     match clipboard::image_png()? {
-        Some(png) => save::file(library, db, "Pasted image.png", "image/png", &png).map(Some),
+        Some(png) => save::file(library, db, "Pasted image.png", "image/png", &png, "", false).map(Some),
         None => Ok(None),
     }
 }

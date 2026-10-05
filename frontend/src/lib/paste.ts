@@ -12,7 +12,7 @@ export type Pasted =
 /** Everything we need from a paste event, read synchronously: the clipboard data is gone once
  * the event handler returns. */
 export interface PasteSnapshot {
-  file: File | null
+  files: File[]
   plain: string
   uriList: string
   hasImageType: boolean
@@ -20,7 +20,7 @@ export interface PasteSnapshot {
 
 export function snapshot(data: DataTransfer): PasteSnapshot {
   return {
-    file: [...data.items].find((item) => item.kind === 'file')?.getAsFile() ?? null,
+    files: [...data.items].filter((item) => item.kind === 'file').flatMap((item) => item.getAsFile() ?? []),
     plain: data.getData('text/plain'),
     uriList: data.getData('text/uri-list'),
     hasImageType: data.types.some((type) => type.startsWith('image/')),
@@ -32,22 +32,25 @@ const mayBeImage = (s: PasteSnapshot) => !s.plain.trim() || s.hasImageType
 
 /** Ordinary text the browser can paste by itself. */
 export function isPlainText(s: PasteSnapshot): boolean {
-  return !s.file && !mayBeFiles(s) && !mayBeImage(s)
+  return !s.files.length && !mayBeFiles(s) && !mayBeImage(s)
 }
 
-/** Resolves what was pasted, asking the backend about files and images when needed. */
-export async function resolve(s: PasteSnapshot): Promise<Pasted | null> {
-  if (s.file) {
-    const isImage = s.file.type.startsWith('image/')
-    return { kind: 'blob', blob: s.file, name: s.file.name || (isImage ? 'Pasted image.png' : 'Pasted file') }
+/** Resolves what was pasted (several files at once, if several were copied), asking the
+ * backend about files and images when needed. */
+export async function resolve(s: PasteSnapshot): Promise<Pasted[]> {
+  if (s.files.length) {
+    return s.files.map((file) => {
+      const isImage = file.type.startsWith('image/')
+      return { kind: 'blob', blob: file, name: file.name || (isImage ? 'Pasted image.png' : 'Pasted file') }
+    })
   }
   if (mayBeFiles(s)) {
     const paths = await pastedFiles(s.uriList || s.plain)
-    if (paths.length) return { kind: 'path', path: paths[0] }
+    if (paths.length) return paths.map((path) => ({ kind: 'path', path }))
   }
   if (mayBeImage(s)) {
     const image = await clipboardImage().catch(() => null)
-    if (image) return { kind: 'blob', blob: image, name: 'Pasted image.png' }
+    if (image) return [{ kind: 'blob', blob: image, name: 'Pasted image.png' }]
   }
-  return s.plain.trim() ? { kind: 'text', text: s.plain } : null
+  return s.plain.trim() ? [{ kind: 'text', text: s.plain }] : []
 }

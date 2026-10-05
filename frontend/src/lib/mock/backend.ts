@@ -142,12 +142,17 @@ const commands: Record<string, Command> = {
   },
   capture_file: (args): CaptureResult => {
     const name = String(args.path).split('/').pop() ?? 'file'
-    return addItem(name, 'file', String(args.path))
+    const note = String(args.note ?? '')
+    if (note && preview(note).secret && !args.force) return { status: 'secret', reason: preview(note).secret! }
+    const kind = /\.(png|jpe?g|gif|webp)$/i.test(name) ? 'image' : 'file'
+    return addItem(note ? preview(note).title : name, kind, note || String(args.path))
   },
   capture_bytes: (_, headers): CaptureResult => {
     const name = decodeURIComponent(headers?.['x-name'] ?? 'file')
+    const note = decodeURIComponent(headers?.['x-note'] ?? '')
+    if (note && preview(note).secret && headers?.['x-force'] !== '1') return { status: 'secret', reason: preview(note).secret! }
     const kind = headers?.['x-mime']?.startsWith('image/') ? 'image' : 'file'
-    return addItem(name, kind, `${name}-${Date.now()}`)
+    return addItem(note ? preview(note).title : name, kind, `${note}\n${name}-${Date.now()}`)
   },
   list_items: (): Item[] => items,
   get_map: async (): Promise<MapData> => {

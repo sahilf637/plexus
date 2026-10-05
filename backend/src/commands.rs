@@ -73,13 +73,22 @@ pub fn capture_text(app: AppHandle, state: State<'_, AppState>, text: String, fo
     timed("text", || save::text(&state.library, &state.db, &text, force)).map(|saved| capture::announce(&app, saved))
 }
 
-/// Files dropped onto a window, or copied in a file manager, by path.
+/// Files dropped onto a window, or copied in a file manager, by path, with an optional note.
 #[tauri::command]
-pub fn capture_file(app: AppHandle, state: State<'_, AppState>, path: PathBuf) -> Result<CaptureResult> {
-    timed("file", || save::file_from_disk(&state.library, &state.db, &path)).map(|saved| capture::announce(&app, saved))
+pub fn capture_file(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: PathBuf,
+    note: Option<String>,
+    force: Option<bool>,
+) -> Result<CaptureResult> {
+    let (note, force) = (note.unwrap_or_default(), force.unwrap_or(false));
+    timed("file", || save::file_from_disk(&state.library, &state.db, &path, &note, force))
+        .map(|saved| capture::announce(&app, saved))
 }
 
-/// Pasted images and files, sent as raw bytes with `x-name` / `x-mime` headers.
+/// Pasted images and files, sent as raw bytes with `x-name` / `x-mime` headers, and the note
+/// (URI-encoded) in `x-note`, `x-force: 1` to keep a note that looks like a secret.
 #[tauri::command]
 pub fn capture_bytes(app: AppHandle, state: State<'_, AppState>, request: Request<'_>) -> Result<CaptureResult> {
     let InvokeBody::Raw(bytes) = request.body() else {
@@ -91,7 +100,10 @@ pub fn capture_bytes(app: AppHandle, state: State<'_, AppState>, request: Reques
         "" => capture::mime_from_name(&name).to_string(),
         mime => mime.to_string(),
     };
-    timed("bytes", || save::file(&state.library, &state.db, &name, &mime, bytes)).map(|saved| capture::announce(&app, saved))
+    let note = clipboard::percent_decode(header("x-note"));
+    let force = header("x-force") == "1";
+    timed("bytes", || save::file(&state.library, &state.db, &name, &mime, bytes, &note, force))
+        .map(|saved| capture::announce(&app, saved))
 }
 
 /// One item with its note body, for the detail panel.

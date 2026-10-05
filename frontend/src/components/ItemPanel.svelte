@@ -51,9 +51,19 @@
 
   const html = $derived(
     detail && (detail.kind === 'text' || detail.kind === 'code' || (detail.kind === 'url' && detail.extracted === 'web@1'))
-      ? DOMPurify.sanitize(marked.parse(detail.body, { async: false }))
+      ? render(detail.body)
       : '',
   )
+  /** The user's note about an image or file: its body without the embedded image. */
+  const noteHtml = $derived.by(() => {
+    if (!detail || (detail.kind !== 'image' && detail.kind !== 'file')) return ''
+    const note = detail.body.replace(/!\[[^\]]*\]\([^)]*\)/g, '').trim()
+    return note ? render(note) : ''
+  })
+
+  function render(markdown: string): string {
+    return DOMPurify.sanitize(marked.parse(markdown, { async: false }))
+  }
 
   function capturedLabel(iso: string): string {
     return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
@@ -83,13 +93,17 @@
     {#if detail.kind === 'url' && html}<p class="source muted">{detail.sourceUrl}</p>{/if}
 
     <div class="content">
-      {#if imageUrl}
-        <img src={imageUrl} alt={detail.title} />
+      {#if detail.kind === 'image' || detail.kind === 'file'}
+        {#if imageUrl}
+          <img src={imageUrl} alt={detail.title} />
+        {:else if detail.kind === 'file'}
+          <p class="muted">{detail.mime ?? 'File'}. Its text will be readable once document support lands.</p>
+        {/if}
+        <!-- Sanitised with DOMPurify above. -->
+        {#if noteHtml}<div class="markdown note">{@html noteHtml}</div>{/if}
       {:else if detail.kind === 'url' && !html}
         <p class="source">{detail.sourceUrl}</p>
         {#if detail.extracted === null}<p class="muted">Reading the page…</p>{/if}
-      {:else if detail.kind === 'file'}
-        <p class="muted">{detail.mime ?? 'File'}. Its text will be readable once document support lands.</p>
       {:else}
         <!-- Sanitised with DOMPurify above. -->
         <div class="markdown">{@html html}</div>
@@ -216,6 +230,10 @@
 
   .markdown {
     overflow-wrap: anywhere;
+  }
+
+  .note {
+    margin-top: 10px;
   }
 
   section {
