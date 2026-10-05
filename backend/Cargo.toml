@@ -32,12 +32,21 @@ futures-util = { version = "0.3", default-features = false, features = ["alloc"]
 regex = "1"
 arboard = "3"
 png = "0.18"
+rusqlite = { version = "0.40", features = ["bundled"] }
+sqlite-vec = "0.1"
+serde_norway = "0.9"
+ulid = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+sha2 = "0.11"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Global shortcuts on Wayland go through the desktop portal.
 ashpd = { version = "0.13", features = ["global_shortcuts"] }
 # For handing the portal's activation token to the window, so the desktop gives it focus.
 gtk = "0.18"
+
+[dev-dependencies]
+tempfile = "3"
 
 [profile.release]
 codegen-units = 1

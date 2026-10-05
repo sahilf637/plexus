@@ -15,6 +15,29 @@ pub enum Kind {
     File,
 }
 
+impl Kind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Kind::Text => "text",
+            Kind::Code => "code",
+            Kind::Url => "url",
+            Kind::Image => "image",
+            Kind::File => "file",
+        }
+    }
+
+    /// Unknown values (e.g. from a newer version) read as `File`, the most general kind.
+    pub fn parse(text: &str) -> Kind {
+        match text {
+            "text" => Kind::Text,
+            "code" => Kind::Code,
+            "url" => Kind::Url,
+            "image" => Kind::Image,
+            _ => Kind::File,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Detected {

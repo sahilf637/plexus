@@ -1,15 +1,19 @@
 mod capture;
 mod commands;
+mod db;
 mod error;
+mod library;
 mod settings;
 mod state;
 mod tray;
 mod windows;
 
-use tauri::{AppHandle, Manager, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 
 use capture::hotkey::{self, Hotkey};
+use db::Db;
+use library::Library;
 use settings::{Settings, SettingsStore};
 use state::AppState;
 
@@ -36,7 +40,10 @@ pub fn run() {
         .setup(|app| {
             let settings = SettingsStore::load(app.path().app_config_dir()?.join("settings.json"))?;
             sync_autostart(app.handle(), &settings.get());
-            app.manage(AppState { settings, hotkey: Hotkey::default() });
+            let library = Library::open(settings.get().library_path)?;
+            let db = Db::open(&library.index_path())?;
+            app.manage(AppState { settings, hotkey: Hotkey::default(), library, db });
+            reconcile_in_background(app.handle());
             tray::create(app.handle())?;
             hotkey::register(app.handle());
             let args: Vec<String> = std::env::args().collect();
@@ -66,6 +73,22 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Plexus");
+}
+
+/// Catches the index up with the library folder without holding up startup.
+fn reconcile_in_background(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let state = app.state::<AppState>();
+        let started = std::time::Instant::now();
+        match library::reconcile::reconcile(&state.library, &state.db) {
+            Ok(report) => {
+                tracing::info!(?report, elapsed = ?started.elapsed(), "library reconciled");
+                let _ = app.emit("library-changed", ());
+            }
+            Err(e) => tracing::error!("couldn't read the library: {e}"),
+        }
+    });
 }
 
 /// Decides which window to show for a launch (or a second launch forwarded to us).
