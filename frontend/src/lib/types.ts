@@ -12,3 +12,27 @@ export interface Settings {
   /** Launch at login so the hotkey is always ready. */
   startAtLogin: boolean
 }
+
+export interface HotkeyStatus {
+  backend: 'portal' | 'native' | 'none'
+  /** The keys actually bound, as the system describes them. */
+  trigger: string | null
+  error: string | null
+  /** The system has its own dialog for changing the keys (Wayland portal). */
+  systemConfigurable: boolean
+}
+
+export type Kind = 'text' | 'code' | 'url' | 'image' | 'file'
+
+export interface Preview {
+  kind: Kind
+  language: string | null
+  title: string
+  /** e.g. "a GitHub token" when the text looks like a secret. */
+  secret: string | null
+}
+
+export type CaptureResult =
+  | { status: 'saved'; id: string; title: string; kind: Kind }
+  | { status: 'duplicate'; id: string; title: string }
+  | { status: 'secret'; reason: string }

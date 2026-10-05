@@ -1,3 +1,4 @@
+mod capture;
 mod commands;
 mod error;
 mod settings;
@@ -8,6 +9,7 @@ mod windows;
 use tauri::{AppHandle, Manager, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 
+use capture::hotkey::{self, Hotkey};
 use settings::{Settings, SettingsStore};
 use state::AppState;
 
@@ -34,8 +36,9 @@ pub fn run() {
         .setup(|app| {
             let settings = SettingsStore::load(app.path().app_config_dir()?.join("settings.json"))?;
             sync_autostart(app.handle(), &settings.get());
-            app.manage(AppState { settings });
+            app.manage(AppState { settings, hotkey: Hotkey::default() });
             tray::create(app.handle())?;
+            hotkey::register(app.handle());
             let args: Vec<String> = std::env::args().collect();
             handle_args(app.handle(), &args, false);
             Ok(())
@@ -50,8 +53,16 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_settings,
             commands::set_settings,
+            commands::hotkey_status,
+            commands::configure_hotkey,
             commands::show_capture,
             commands::hide_capture,
+            commands::clipboard_image,
+            commands::pasted_files,
+            commands::capture_preview,
+            commands::capture_text,
+            commands::capture_file,
+            commands::capture_bytes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Plexus");

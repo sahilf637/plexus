@@ -1,6 +1,7 @@
-// In-memory stand-in for the Rust backend, used by `npm run dev:ui`.
+// In-memory stand-in for the Rust backend, used by `npm run dev:ui`. Detection here is a rough
+// approximation, good enough to exercise the UI; the real rules live in Rust.
 
-import type { Settings } from '../types'
+import type { CaptureResult, HotkeyStatus, Kind, Preview, Settings } from '../types'
 
 let settings: Settings = {
   libraryPath: '~/Plexus',
@@ -23,16 +24,58 @@ export function listen<T>(event: string, handler: (payload: T) => void): () => v
   return () => set.delete(handler as Handler)
 }
 
-const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
+function preview(text: string): Preview {
+  const trimmed = text.trim()
+  const firstLine = trimmed.split('\n').find((l) => l.trim()) ?? 'Untitled'
+  let kind: Kind = 'text'
+  if (/^https?:\/\/\S+$/.test(trimmed)) kind = 'url'
+  else if (/[;{}]\s*$|=>|^\s*(fn|def|const|let|import)\b/m.test(trimmed)) kind = 'code'
+  const secret = /\b(sk-|ghp_|AKIA)\w{8,}|password\s*[:=]/i.test(trimmed) ? 'an API key' : null
+  return { kind, language: null, title: firstLine.replace(/^[#>*\-\s]+/, '').slice(0, 80), secret }
+}
+
+const status: HotkeyStatus = {
+  backend: 'portal',
+  trigger: 'Ctrl+Alt+V',
+  error: null,
+  systemConfigurable: true,
+}
+
+type Command = (args: Record<string, unknown>, headers?: Record<string, string>) => unknown
+
+const commands: Record<string, Command> = {
   get_settings: () => settings,
   set_settings: (args) => (settings = args.settings as Settings),
+  hotkey_status: () => status,
+  configure_hotkey: () => {},
   // In the browser the capture window is its own page: open it in a new tab.
   show_capture: () => void window.open('/capture.html', 'plexus-capture'),
   hide_capture: () => void window.close(),
+  clipboard_image: () => new ArrayBuffer(0),
+  pasted_files: () => [],
+  capture_preview: (args) => preview(args.text as string),
+  capture_text: (args): CaptureResult => {
+    const p = preview(args.text as string)
+    if (p.secret && !args.force) return { status: 'secret', reason: p.secret }
+    return { status: 'saved', id: crypto.randomUUID(), title: p.title, kind: p.kind }
+  },
+  capture_file: (args): CaptureResult => {
+    const name = String(args.path).split('/').pop() ?? 'file'
+    return { status: 'saved', id: crypto.randomUUID(), title: name, kind: 'file' }
+  },
+  capture_bytes: (_, headers): CaptureResult => {
+    const name = decodeURIComponent(headers?.['x-name'] ?? 'file')
+    const kind = headers?.['x-mime']?.startsWith('image/') ? 'image' : 'file'
+    return { status: 'saved', id: crypto.randomUUID(), title: name, kind }
+  },
 }
 
-export async function invoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
+export async function invoke<T>(
+  command: string,
+  args: Record<string, unknown> | Uint8Array = {},
+  headers?: Record<string, string>,
+): Promise<T> {
   const handler = commands[command]
   if (!handler) throw new Error(`mock backend: unknown command "${command}"`)
-  return handler(args) as T
+  return handler(args instanceof Uint8Array ? {} : args, headers) as T
 }

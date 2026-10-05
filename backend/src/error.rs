@@ -8,6 +8,13 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     Tauri(#[from] tauri::Error),
+    #[error("clipboard: {0}")]
+    Clipboard(#[from] arboard::Error),
+    #[error("couldn't encode the image: {0}")]
+    Png(#[from] png::EncodingError),
+    /// The UI sent something the command can't use.
+    #[error("{0}")]
+    Invalid(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

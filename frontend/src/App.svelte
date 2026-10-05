@@ -1,24 +1,46 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { getSettings, showCapture } from './lib/api'
+  import { hotkeyStatus, showCapture } from './lib/api'
   import EmptyState from './components/EmptyState.svelte'
+  import SettingsDialog from './components/SettingsDialog.svelte'
 
   let hotkey = $state('Ctrl+Alt+V')
+  let settingsOpen = $state(false)
 
-  onMount(async () => {
-    hotkey = (await getSettings()).hotkey
+  async function refreshHotkey() {
+    const status = await hotkeyStatus()
+    if (status.trigger) hotkey = status.trigger
+  }
+
+  onMount(() => {
+    refreshHotkey()
+    // The portal may still be waiting for the user to approve the shortcut at startup.
+    const timer = setTimeout(refreshHotkey, 3000)
+    return () => clearTimeout(timer)
   })
 </script>
 
 <div class="app">
   <header>
     <span class="brand">Plexus</span>
-    <button class="add" onclick={showCapture}>Add <kbd>{hotkey}</kbd></button>
+    <div class="actions">
+      <button onclick={showCapture}>Add <kbd>{hotkey}</kbd></button>
+      <button onclick={() => (settingsOpen = true)} aria-label="Settings">Settings</button>
+    </div>
   </header>
   <main>
     <EmptyState {hotkey} />
   </main>
 </div>
+
+{#if settingsOpen}
+  <SettingsDialog
+    onclose={() => {
+      settingsOpen = false
+      refreshHotkey()
+    }}
+  />
+{/if}
 
 <style>
   .app {
@@ -41,7 +63,12 @@
     letter-spacing: 0.02em;
   }
 
-  .add {
+  .actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .actions button {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -51,7 +78,7 @@
     background: var(--surface-2);
   }
 
-  .add:hover {
+  .actions button:hover {
     border-color: var(--accent);
   }
 
