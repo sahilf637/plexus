@@ -149,8 +149,16 @@ pub fn delete(conn: &mut Connection, id: &str) -> Result<()> {
     // vec_chunks is a virtual table, so foreign keys can't clean it up.
     tx.execute("DELETE FROM vec_chunks WHERE rowid IN (SELECT id FROM chunks WHERE item_id = ?1)", [id])?;
     tx.execute("DELETE FROM items_fts WHERE item_id = ?1", [id])?;
+    tx.execute("DELETE FROM user_links WHERE src = ?1", [id])?;
     tx.execute("DELETE FROM items WHERE id = ?1", [id])?;
     tx.commit()?;
+    Ok(())
+}
+
+/// Records the note file's new modification time and size after Plexus itself rewrote it, so
+/// reconcile doesn't take the change for an edit.
+pub fn set_file_state(conn: &Connection, id: &str, mtime: i64, size: i64) -> Result<()> {
+    conn.execute("UPDATE items SET file_mtime = ?2, file_size = ?3 WHERE id = ?1", params![id, mtime, size])?;
     Ok(())
 }
 
@@ -217,7 +225,6 @@ pub fn file_states(conn: &Connection) -> Result<HashMap<String, FileState>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-#[cfg(test)]
 pub fn count(conn: &Connection) -> Result<usize> {
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM items", [], |row| row.get(0))?;
     Ok(count as usize)

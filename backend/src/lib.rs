@@ -2,6 +2,7 @@ mod capture;
 mod commands;
 mod db;
 mod error;
+mod extract;
 mod fetch;
 mod library;
 mod pipeline;
@@ -17,6 +18,8 @@ use tauri_plugin_autostart::MacosLauncher;
 
 use capture::hotkey::{self, Hotkey};
 use db::Db;
+use extract::ocr::{self, Ocr};
+use extract::worker::Extractor;
 use fetch::Fetcher;
 use library::Library;
 use pipeline::Pipeline;
@@ -57,10 +60,12 @@ pub fn run() {
             app.asset_protocol_scope().allow_directory(library.root(), true)?;
             let (pipeline, link_queue) = Pipeline::new(Embedder::new(find_model(app.handle())));
             let (fetcher, fetch_queue) = Fetcher::new();
-            app.manage(AppState { settings, hotkey: Hotkey::default(), library, db, pipeline, fetcher });
-            start_background_work(app.handle(), link_queue, fetch_queue);
+            let (extractor, extract_queue) = Extractor::new(Ocr::new(find_models(app.handle(), ocr::MODEL_DIR, Ocr::find)));
+            app.manage(AppState { settings, hotkey: Hotkey::default(), library, db, pipeline, fetcher, extractor });
+            start_background_work(app.handle(), link_queue, fetch_queue, extract_queue);
             tray::create(app.handle())?;
             hotkey::register(app.handle());
+            capture::watch::start(app.handle());
             let args: Vec<String> = std::env::args().collect();
             handle_args(app.handle(), &args, false);
             Ok(())
@@ -94,6 +99,10 @@ pub fn run() {
             commands::search,
             commands::open_item_file,
             commands::open_source,
+            commands::delete_items,
+            commands::restore_items,
+            commands::link_items,
+            commands::unlink_items,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Plexus");
@@ -101,7 +110,7 @@ pub fn run() {
 
 /// Catches the index up with the library folder, then keeps reading links' pages and linking
 /// items as they arrive. Runs on its own threads so startup doesn't wait for it.
-fn start_background_work(app: &AppHandle, link_queue: Receiver<String>, fetch_queue: Receiver<String>) {
+fn start_background_work(app: &AppHandle, link_queue: Receiver<String>, fetch_queue: Receiver<String>, extract_queue: Receiver<String>) {
     let app = app.clone();
     std::thread::spawn(move || {
         let state = app.state::<AppState>();
@@ -110,20 +119,34 @@ fn start_background_work(app: &AppHandle, link_queue: Receiver<String>, fetch_qu
             Ok(report) => {
                 tracing::info!(?report, elapsed = ?started.elapsed(), "library reconciled");
                 let _ = app.emit("library-changed", ());
+                let purged = library::trash::purge(&state.library, library::trash::KEEP);
+                if purged > 0 {
+                    tracing::info!(purged, "emptied old deleted items");
+                }
             }
             Err(e) => tracing::error!("couldn't read the library: {e}"),
         }
         fetch::run(&app, fetch_queue);
+        extract::worker::run(&app, extract_queue);
         pipeline::run(app.clone(), link_queue);
     });
 }
 
-/// The bundled embedding model: in the app's resources, or (in development) in the source tree.
+/// The bundled embedding model.
 fn find_model(app: &AppHandle) -> Option<std::path::PathBuf> {
-    let bundled = app.path().resource_dir().ok().map(|dir| dir.join(embed::MODEL_DIR));
-    let source_tree = cfg!(debug_assertions)
-        .then(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources").join(embed::MODEL_DIR));
-    Embedder::find(bundled.into_iter().chain(source_tree))
+    find_models(app, embed::MODEL_DIR, Embedder::find)
+}
+
+/// A bundled model folder: in the app's resources, or (in development) in the source tree.
+fn find_models(
+    app: &AppHandle,
+    dir: &str,
+    find: impl FnOnce(Vec<std::path::PathBuf>) -> Option<std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
+    let bundled = app.path().resource_dir().ok().map(|resources| resources.join(dir));
+    let source_tree =
+        cfg!(debug_assertions).then(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources").join(dir));
+    find(bundled.into_iter().chain(source_tree).collect())
 }
 
 /// Decides which window to show for a launch (or a second launch forwarded to us).

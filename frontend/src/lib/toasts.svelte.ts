@@ -11,10 +11,10 @@ let nextId = 1
 
 export const toasts = $state<Toast[]>([])
 
-export function toast(message: string, action?: Toast['action']) {
+export function toast(message: string, action?: Toast['action'], ms = TIMEOUT_MS) {
   const id = nextId++
   toasts.push({ id, message, action })
-  setTimeout(() => dismiss(id), TIMEOUT_MS)
+  setTimeout(() => dismiss(id), ms)
 }
 
 export function dismiss(id: number) {

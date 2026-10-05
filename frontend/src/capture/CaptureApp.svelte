@@ -44,6 +44,9 @@
   let nextId = 0
   let preview = $state<Preview | null>(null)
   let phase = $state<Phase>('edit')
+  /** The rich-text version of what was pasted into an empty box. */
+  let rich: { html: string; plain: string } | null = null
+
   let secretReason = $state('')
   let savedTitle = $state('')
   /** Nothing new was saved: it was all in Plexus already. */
@@ -94,6 +97,7 @@
     phase = 'edit'
     secretReason = ''
     errorMessage = ''
+    rich = null
     dragOver = false
     queueMicrotask(() => textarea?.focus())
   }
@@ -164,6 +168,9 @@
     if (!event.clipboardData || phase !== 'edit') return
     const pasted = snapshot(event.clipboardData)
     if (isPlainText(pasted)) {
+      // Kept so a paste from a web page or document saves with its headings, lists and links,
+      // as long as it isn't edited afterwards (see `save`).
+      rich = pasted.html && !text.trim() ? { html: pasted.html, plain: pasted.plain } : null
       // The textarea takes it as usual. If something else had focus, put it there.
       if (document.activeElement !== textarea) {
         event.preventDefault()
@@ -214,7 +221,8 @@
           results.push(result)
         }
       } else {
-        const result = await captureText(text, force)
+        const unedited = rich !== null && text.trim() === rich.plain.trim()
+        const result = await captureText(text, force, unedited ? rich!.html : undefined)
         if (result.status === 'secret') return askAboutSecret(result.reason)
         results.push(result)
       }

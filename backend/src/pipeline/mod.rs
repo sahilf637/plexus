@@ -5,6 +5,7 @@
 pub mod chunk;
 pub mod embed;
 pub mod link;
+pub mod reason;
 pub mod search;
 #[cfg(test)]
 mod tune;
@@ -21,6 +22,7 @@ use crate::capture::detect::Kind;
 use crate::db::items::{self, Item, Status};
 use crate::db::{chunks, graph};
 use crate::error::Result;
+use crate::extract;
 use crate::state::AppState;
 use embed::Embedder;
 
@@ -91,7 +93,7 @@ pub fn run(app: AppHandle, queue: Receiver<String>) {
 }
 
 fn prepare(state: &AppState) -> Result<()> {
-    let (pending, unread) = state.db.with(|conn| {
+    let (pending, unread, unread_files) = state.db.with(|conn| {
         if chunks::get_meta(conn, "embed_model")?.as_deref() != Some(embed::MODEL_ID) {
             tracing::info!(model = embed::MODEL_ID, "embedding model changed; re-linking everything");
             chunks::reset_embeddings(conn)?;
@@ -103,14 +105,21 @@ fn prepare(state: &AppState) -> Result<()> {
             chunks::reset_links(conn)?;
             chunks::set_meta(conn, "pipeline_version", &version)?;
         }
-        Ok((chunks::pending_ids(conn)?, items::unread_links(conn)?))
+        // Files and images whose text hasn't been read (or was read by an older extractor),
+        // linked or not: reading it changes how they link.
+        let unread_files: Vec<String> =
+            items::all(conn)?.iter().filter(|i| extract::worker::needs_extraction(i)).map(|i| i.id.clone()).collect();
+        Ok((chunks::pending_ids(conn)?, items::unread_links(conn)?, unread_files))
     })?;
     if !pending.is_empty() {
         tracing::info!(count = pending.len(), unread_links = unread.len(), "linking items");
     }
     // Links whose page hasn't been read go to the fetcher, which links them afterwards.
-    for id in pending.iter().filter(|id| !unread.contains(id)) {
+    for id in pending.iter().filter(|id| !unread.contains(id) && !unread_files.contains(id)) {
         state.pipeline.enqueue(id);
+    }
+    for id in &unread_files {
+        state.extractor.enqueue(id);
     }
     for id in &unread {
         state.fetcher.enqueue(id);
@@ -139,7 +148,9 @@ fn process(app: &AppHandle, state: &AppState, id: &str) -> Result<()> {
         let links = state.db.with(|conn| {
             chunks::replace(conn, id, &texts, &vectors)?;
             items::set_name_only(conn, id, name_only)?;
-            link::link(conn, id, &vectors, name_only)
+            let links = link::link(conn, id, &vectors, name_only)?;
+            reason::explain(conn, id, &texts.join("\n"), &links, name_only)?;
+            Ok(links)
         })?;
         (Status::Linked, links)
     };
@@ -164,7 +175,10 @@ fn process(app: &AppHandle, state: &AppState, id: &str) -> Result<()> {
 /// about it; web links stay.
 fn own_text(body: &str) -> String {
     static LOCAL_EMBED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"!?\[[^\]]*\]\(([^)]*)\)").unwrap());
-    let body = LOCAL_EMBED.replace_all(body, |c: &regex::Captures| {
+    // The extracted-text marker and page markers say nothing about the item.
+    static COMMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<!--.*?-->").unwrap());
+    let body = COMMENT.replace_all(body, "").into_owned();
+    let body = LOCAL_EMBED.replace_all(&body, |c: &regex::Captures| {
         let target = &c[1];
         if target.contains("://") { c[0].to_string() } else { String::new() }
     });
@@ -182,8 +196,7 @@ fn embedding_text(item: &Item, body: &str) -> String {
     let body = own_text(body);
     let body = body.as_str();
     match item.kind {
-        // Until text is extracted from them (M1), images and files have the user's note, or
-        // else only their names.
+        // Their extracted text and the user's note; with neither, only their names.
         Kind::Image | Kind::File if !body.is_empty() => body.to_string(),
         Kind::Image | Kind::File => {
             if item.title.chars().filter(|c| c.is_alphabetic()).count() < 3 || item.title.starts_with("Pasted ") {
@@ -232,7 +245,7 @@ mod tests {
         let library = Library::open(dir.path().to_path_buf()).unwrap();
         let db = Db::open(&library.index_path()).unwrap();
         let model = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources").join(embed::MODEL_DIR);
-        let embedder = Embedder::new(Embedder::find([model]));
+        let embedder = Embedder::new(Embedder::find(vec![model]));
 
         let notes = [
             "Rust ownership: every value has exactly one owner, and the value is dropped when its owner goes out of scope.",

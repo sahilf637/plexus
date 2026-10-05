@@ -4,16 +4,19 @@
     captureBytes,
     captureFile,
     captureText,
+    deleteItems,
     getMap,
     hotkeyStatus,
     on,
+    openItemFile,
+    restoreItems,
     saveLayout,
     search,
     showCapture,
   } from './lib/api'
   import { resolve, snapshot } from './lib/paste'
   import { toast } from './lib/toasts.svelte'
-  import type { CaptureResult, Item, ItemLinked, MapData, Tier } from './lib/types'
+  import type { CaptureResult, Item, ItemLinked, LinksChanged, MapData, Tier } from './lib/types'
   import EmptyState from './components/EmptyState.svelte'
   import ItemPanel from './components/ItemPanel.svelte'
   import MapView from './components/Map.svelte'
@@ -30,6 +33,12 @@
   let query = $state('')
   let matches = $state<string[] | null>(null)
   let searchInput = $state<HTMLInputElement>()
+  /** Items picked together with Shift-click (two or more; a single pick is just `selected`). */
+  let marked = $state<string[]>([])
+  /** The right-click menu: for this item, at these pixels in the map. */
+  let menu = $state<{ id: string; x: number; y: number } | null>(null)
+  /** Delete's Undo stays on screen longer than other messages. */
+  const UNDO_MS = 10000
 
   // Which links the map draws, remembered on this computer.
   const SHOW_KEY = 'plexus.showLinks'
@@ -86,6 +95,14 @@
     if (!hadLinks && event.edges.length) mapView?.settle(event.id)
   }
 
+  /** A link was made or removed by hand: redraw the links of the items it touches. */
+  function onLinksChanged(event: LinksChanged) {
+    if (!data) return
+    const touched = new Set(event.ids)
+    data.edges = [...data.edges.filter((e) => !touched.has(e.src) && !touched.has(e.dst)), ...event.edges]
+    mapView?.setEdges(data.edges)
+  }
+
   /** An item's note changed in the background (a link's page was read): new title, body. */
   function onItemUpdated(item: Item) {
     if (!data) return
@@ -93,6 +110,74 @@
     if (index < 0) return
     data.items[index] = item
     mapView?.addItem(item)
+  }
+
+  /** A click on an item or on empty space; with Shift an item joins or leaves the selection. */
+  function pick(id: string | null, additive = false) {
+    menu = null
+    if (id === null) {
+      selected = null
+      marked = []
+    } else if (!additive) {
+      selected = id
+      marked = []
+    } else {
+      const current = marked.length ? marked : selected ? [selected] : []
+      const next = current.includes(id) ? current.filter((i) => i !== id) : [...current, id]
+      marked = next.length > 1 ? next : []
+      selected = next.length === 1 ? next[0] : null
+    }
+  }
+
+  /** Room the menu needs, so it stays inside the map near the window's edges. */
+  const MENU_SIZE = { width: 190, height: 90 }
+  let mainEl = $state<HTMLElement>()
+
+  function openMenu(id: string, x: number, y: number) {
+    if (!marked.includes(id)) pick(id)
+    const room = { width: mainEl?.clientWidth ?? Infinity, height: mainEl?.clientHeight ?? Infinity }
+    menu = {
+      id,
+      x: Math.max(0, Math.min(x, room.width - MENU_SIZE.width)),
+      y: Math.max(0, Math.min(y, room.height - MENU_SIZE.height)),
+    }
+  }
+
+  /** Deletes items (their files go to the library's trash) and offers Undo. */
+  async function remove(ids: string[]) {
+    menu = null
+    if (!ids.length) return
+    const first = itemsById.get(ids[0])?.title
+    try {
+      const result = await deleteItems(ids)
+      if (!result.ids.length) return
+      const message = result.ids.length === 1 ? `Deleted “${first}”` : `Deleted ${result.ids.length} items`
+      toast(message, { label: 'Undo', run: () => undo(result.batch) }, UNDO_MS)
+    } catch (e) {
+      toast(`Couldn't delete: ${e}`)
+    }
+  }
+
+  async function undo(batch: string) {
+    try {
+      const count = await restoreItems(batch)
+      toast(count === 1 ? 'Restored' : `Restored ${count} items`)
+    } catch (e) {
+      toast(`Couldn't restore: ${e}`)
+    }
+  }
+
+  /** Items were deleted (here or by anything else): they leave the map and the selection. */
+  function onItemsDeleted(ids: string[]) {
+    if (!data) return
+    const gone = new Set(ids)
+    mapView?.removeItems(ids)
+    data.items = data.items.filter((i) => !gone.has(i.id))
+    data.edges = data.edges.filter((e) => !gone.has(e.src) && !gone.has(e.dst))
+    if (selected && gone.has(selected)) selected = null
+    const left = marked.filter((id) => !gone.has(id))
+    marked = left.length > 1 ? left : []
+    if (left.length === 1) selected = left[0]
   }
 
   let tidying = $state(false)
@@ -147,7 +232,8 @@
     event.preventDefault()
     try {
       for (const pasted of await resolve(snapshot(event.clipboardData))) {
-        if (pasted.kind === 'text') report(await captureText(pasted.text), () => captureText(pasted.text, true))
+        if (pasted.kind === 'text')
+          report(await captureText(pasted.text, false, pasted.html), () => captureText(pasted.text, true, pasted.html))
         else if (pasted.kind === 'blob') report(await captureBytes(pasted.blob, pasted.name))
         else report(await captureFile(pasted.path))
       }
@@ -158,7 +244,14 @@
 
   function onkeydown(event: KeyboardEvent) {
     const typing = isTyping(event.target, 'input, textarea')
-    if (event.key === 'Escape' && !typing) selected = null
+    if (event.key === 'Escape' && !typing) {
+      selected = null
+      marked = []
+      menu = null
+    }
+    if (event.key === 'Delete' && !typing && !settingsOpen) {
+      remove(marked.length ? marked : selected ? [selected] : [])
+    }
     if (event.key === '/' && !typing) {
       event.preventDefault()
       searchInput?.focus()
@@ -173,7 +266,9 @@
     const unsubscribers = [
       on<Item>('item-added', onItemAdded),
       on<ItemLinked>('item-linked', onItemLinked),
+      on<LinksChanged>('links-changed', onLinksChanged),
       on<Item>('item-updated', onItemUpdated),
+      on<string[]>('items-deleted', onItemsDeleted),
       on('library-changed', loadMap),
     ]
     return () => {
@@ -183,7 +278,13 @@
   })
 </script>
 
-<svelte:window {onpaste} {onkeydown} />
+<svelte:window
+  {onpaste}
+  {onkeydown}
+  onpointerdown={(event) => {
+    if (menu && !isTyping(event.target, '.menu')) menu = null
+  }}
+/>
 
 <div class="app">
   <header>
@@ -224,7 +325,7 @@
     </div>
   </header>
 
-  <main>
+  <main bind:this={mainEl}>
     {#if data && data.items.length}
       {#key mapVersion}
         <MapView
@@ -233,7 +334,9 @@
           {selected}
           {matches}
           {lowestTier}
-          onselect={(id) => (selected = id)}
+          {marked}
+          onselect={pick}
+          onmenu={openMenu}
           onplaced={(positions) => saveLayout(positions)}
         />
       {/key}
@@ -244,7 +347,29 @@
           edges={data.edges}
           onselect={(id) => (selected = id)}
           onclose={() => (selected = null)}
+          ondelete={() => remove([selected!])}
         />
+      {/if}
+      {#if marked.length > 1}
+        <div class="bar" role="status">
+          <span>{marked.length} selected</span>
+          <button class="danger" onclick={() => remove(marked)}>Delete <kbd>Del</kbd></button>
+          <button onclick={() => (marked = [])}>Clear <kbd>Esc</kbd></button>
+        </div>
+      {/if}
+      {#if menu}
+        {@const target = itemsById.get(menu.id)}
+        {@const count = marked.length > 1 ? marked.length : 1}
+        <div class="menu" role="menu" style:left={`${menu.x}px`} style:top={`${menu.y}px`}>
+          {#if count === 1 && target}
+            <button role="menuitem" onclick={() => { openItemFile(target.id); menu = null }}>
+              {target.assetPath ? 'Open file' : 'Open note'}
+            </button>
+          {/if}
+          <button role="menuitem" class="danger" onclick={() => remove(count > 1 ? marked : [menu!.id])}>
+            {count > 1 ? `Delete ${count} items` : 'Delete'} <kbd>Del</kbd>
+          </button>
+        </div>
       {/if}
     {:else if data}
       <EmptyState {hotkey} onadd={showCapture} />
@@ -362,6 +487,61 @@
     background: var(--surface);
     color: var(--text);
     box-shadow: 0 1px 2px rgb(0 0 0 / 0.15);
+  }
+
+  .menu,
+  .bar {
+    position: absolute;
+    z-index: 5;
+    display: flex;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+  }
+
+  .menu {
+    flex-direction: column;
+    min-width: 160px;
+    padding: 4px;
+  }
+
+  .menu button {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 6px 10px;
+    border: none;
+    border-radius: 6px;
+    background: none;
+    text-align: left;
+  }
+
+  .menu button:hover {
+    background: var(--surface-2);
+  }
+
+  .bar {
+    left: 50%;
+    bottom: 16px;
+    transform: translateX(-50%);
+    align-items: center;
+    gap: 12px;
+    padding: 6px 8px 6px 14px;
+  }
+
+  .bar button {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface-2);
+  }
+
+  .danger {
+    color: var(--danger);
   }
 
   main {

@@ -9,7 +9,7 @@ use std::time::UNIX_EPOCH;
 use serde::Serialize;
 
 use super::{Library, text_hash};
-use crate::db::Db;
+use crate::db::{Db, graph};
 use crate::db::items::{self, Item, Status};
 use crate::error::Result;
 use crate::library::note::Note;
@@ -60,7 +60,10 @@ pub fn reconcile(library: &Library, db: &Db) -> Result<Report> {
 
         let is_new = !known.values().any(|state| state.id == note.meta.id);
         let item = item_from_note(library, &path, &note, mtime, size);
-        db.with(|conn| items::upsert(conn, &item, &note.body))?;
+        db.with(|conn| {
+            items::upsert(conn, &item, &note.body)?;
+            graph::set_user_links(conn, &item.id, &note.meta.links)
+        })?;
         if is_new { report.added += 1 } else { report.updated += 1 }
     }
 

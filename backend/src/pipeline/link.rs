@@ -68,7 +68,7 @@ impl Tier {
 }
 
 /// Bumped when how links are computed changes; links from an older version are recomputed.
-pub const PIPELINE_VERSION: i64 = 3;
+pub const PIPELINE_VERSION: i64 = 4;
 const NEIGHBOURS_PER_CHUNK: usize = 40;
 
 /// Recomputes the item's `similar` links from its chunk vectors. `name_only` items (a file known

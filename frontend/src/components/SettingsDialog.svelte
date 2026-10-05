@@ -91,6 +91,18 @@
     </section>
 
     <section>
+      <h3>Clipboard</h3>
+      <label class="row">
+        <input type="checkbox" checked={settings.watchClipboard} onchange={(e) => update({ watchClipboard: e.currentTarget.checked })} />
+        Save text I copy, without pasting it into Plexus
+      </label>
+      <p class="muted small">
+        Skips short copies and anything that looks like a password or key, but can't tell which app a copy came from.
+        Off by default. On some Linux desktops (GNOME on Wayland) apps can't read the clipboard in the background.
+      </p>
+    </section>
+
+    <section>
       <h3>Library folder</h3>
       <p><code>{settings.libraryPath}</code></p>
       <p class="muted small">Every item is a markdown file here. Changing the folder comes later.</p>

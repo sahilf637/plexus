@@ -37,27 +37,47 @@ fn edge_from_row(row: &rusqlite::Row) -> rusqlite::Result<Edge> {
     })
 }
 
-/// Every edge the user hasn't rejected.
+/// Links made by hand (between items that both exist) read as edges: always strong.
+const USER_EDGES: &str = "SELECT u.src, u.dst, 'user', 1.0, 'linked by you', 'strong'
+    FROM user_links u JOIN items a ON a.id = u.src JOIN items b ON b.id = u.dst";
+
+fn collect_edges(mut found: Vec<Edge>) -> Vec<Edge> {
+    found.sort_by(|a, b| b.weight.total_cmp(&a.weight));
+    found
+}
+
+/// Every edge the user hasn't rejected, plus the links they made, strongest first.
 pub fn edges(conn: &Connection) -> Result<Vec<Edge>> {
     let mut stmt = conn.prepare(
-        "SELECT src, dst, kind, weight, reason, tier FROM edges WHERE status != 'rejected' ORDER BY weight DESC",
+        "SELECT src, dst, kind, weight, reason, tier FROM edges WHERE status != 'rejected'",
     )?;
-    let rows = stmt.query_map([], |row| {
-        edge_from_row(row)
-    })?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    let mut found: Vec<Edge> = stmt.query_map([], edge_from_row)?.collect::<rusqlite::Result<_>>()?;
+    let mut stmt = conn.prepare(USER_EDGES)?;
+    found.extend(stmt.query_map([], edge_from_row)?.collect::<rusqlite::Result<Vec<_>>>()?);
+    Ok(collect_edges(found))
 }
 
 /// The links touching one item.
 pub fn edges_of(conn: &Connection, id: &str) -> Result<Vec<Edge>> {
     let mut stmt = conn.prepare(
         "SELECT src, dst, kind, weight, reason, tier FROM edges
-         WHERE status != 'rejected' AND (src = ?1 OR dst = ?1) ORDER BY weight DESC",
+         WHERE status != 'rejected' AND (src = ?1 OR dst = ?1)",
     )?;
-    let rows = stmt.query_map([id], |row| {
-        edge_from_row(row)
-    })?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    let mut found: Vec<Edge> = stmt.query_map([id], edge_from_row)?.collect::<rusqlite::Result<_>>()?;
+    let mut stmt = conn.prepare(&format!("{USER_EDGES} WHERE u.src = ?1 OR u.dst = ?1"))?;
+    found.extend(stmt.query_map([id], edge_from_row)?.collect::<rusqlite::Result<Vec<_>>>()?);
+    Ok(collect_edges(found))
+}
+
+/// Replaces the links made by hand that the note of `src` holds.
+pub fn set_user_links(conn: &mut Connection, src: &str, dst: &[String]) -> Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM user_links WHERE src = ?1", [src])?;
+    for id in dst.iter().filter(|id| id.as_str() != src) {
+        tx.execute("INSERT OR IGNORE INTO user_links (src, dst) VALUES (?1, ?2)", [src, id])?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 pub fn positions(conn: &Connection) -> Result<Vec<Position>> {

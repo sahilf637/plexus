@@ -32,7 +32,7 @@ fn tune_links() {
     let db = Db::open(&scratch.path().join("index.db")).unwrap();
     reconcile(&library, &db).unwrap();
     let model = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources").join(MODEL_DIR);
-    let embedder = Embedder::new(Embedder::find([model]));
+    let embedder = Embedder::new(Embedder::find(vec![model]));
 
     // Embed every note (links are left out: their pages aren't read here).
     let mut topics: HashMap<String, String> = HashMap::new();
@@ -205,6 +205,26 @@ fn tune_links() {
     for id in unlinked.iter().take(15) {
         println!("  [{}] {}", topics[*id], titles[*id]);
     }
+
+    // What the link reasons say, on a sample of real links.
+    println!("\nsample link reasons");
+    db.with(|conn| {
+        let mut ids: Vec<&String> = titles.keys().collect();
+        ids.sort();
+        for id in ids.iter().step_by(14) {
+            let links = super::link::link(conn, id, &vectors[*id], false)?;
+            let text = chunks::text_of(conn, id, 40_000)?;
+            super::reason::explain(conn, id, &text, &links, false)?;
+            for (other, similarity, tier) in links.iter().take(2) {
+                let (src, dst) = if id.as_str() < other.as_str() { (id.as_str(), other.as_str()) } else { (other.as_str(), id.as_str()) };
+                let reason: Option<String> =
+                    conn.query_row("SELECT reason FROM edges WHERE src = ?1 AND dst = ?2 AND kind = 'similar'", [src, dst], |r| r.get(0))?;
+                println!("  {:.2} {:?}  {} -> {}\n       {}", similarity, tier, titles[*id], titles[other], reason.unwrap_or_default());
+            }
+        }
+        Ok(())
+    })
+    .unwrap();
 }
 
 /// The links linking would make: each note's closest `max_links` above `threshold`, both ways.

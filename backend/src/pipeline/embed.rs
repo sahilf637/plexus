@@ -45,7 +45,7 @@ impl Embedder {
     }
 
     /// The first of `candidates` that holds all the model files.
-    pub fn find(candidates: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+    pub fn find(candidates: Vec<PathBuf>) -> Option<PathBuf> {
         candidates.into_iter().find(|dir| FILES.iter().all(|f| dir.join(f).is_file()))
     }
 
@@ -134,7 +134,7 @@ mod tests {
     #[ignore = "needs the model files; run with --ignored"]
     fn related_text_scores_higher_than_unrelated() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources").join(MODEL_DIR);
-        let embedder = Embedder::new(Embedder::find([dir]));
+        let embedder = Embedder::new(Embedder::find(vec![dir]));
         let texts = [
             "Rust's ownership rules: each value has one owner and is dropped when it goes out of scope.",
             "The borrow checker makes sure references never outlive the data they point to.",
@@ -163,7 +163,7 @@ mod calibration {
     #[ignore = "needs the model files; prints a report"]
     fn similarity_report() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources").join(MODEL_DIR);
-        let embedder = Embedder::new(Embedder::find([dir]));
+        let embedder = Embedder::new(Embedder::find(vec![dir]));
         let groups: &[(&str, &[&str])] = &[
             ("rust", &[
                 "Rust's ownership rules: each value has one owner and is dropped when it goes out of scope.",

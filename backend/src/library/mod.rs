@@ -1,8 +1,10 @@
 //! The library folder: one markdown note per item, with originals (images, documents) next to
 //! their notes. It is the source of truth; the index in `.plexus/` is rebuilt from it.
 
+pub mod links;
 pub mod note;
 pub mod reconcile;
+pub mod trash;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -39,6 +41,11 @@ impl Library {
 
     pub fn index_path(&self) -> PathBuf {
         self.root.join(INDEX_DIR).join("index.db")
+    }
+
+    /// Where deleted items wait to be restored (see `trash`). Outside `items/`, so never indexed.
+    pub fn trash_dir(&self) -> PathBuf {
+        self.root.join(INDEX_DIR).join("trash")
     }
 
     /// Paths are stored relative to the library root, with `/` separators, so the library can be

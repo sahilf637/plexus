@@ -29,11 +29,25 @@ impl Saved {
 }
 
 pub fn text(library: &Library, db: &Db, text: &str, force: bool) -> Result<Saved> {
+    rich_text(library, db, text, None, force)
+}
+
+/// Pasted text that may also come as HTML (copied from a web page or a document): when it has
+/// real structure (headings, lists, links, tables) the note keeps it as markdown. Code and
+/// links are saved from the plain text as usual.
+pub fn rich_text(library: &Library, db: &Db, text: &str, html: Option<&str>, force: bool) -> Result<Saved> {
     if !force && let Some(reason) = secrets::find_secret(text) {
         return Ok(Saved::not_saved(CaptureResult::Secret { reason }));
     }
-    let detected = detect::detect_text(text);
-    let body = body_for_text(text, &detected);
+    let mut detected = detect::detect_text(text);
+    let markdown = html.filter(|_| detected.kind == Kind::Text).and_then(markdown_from_html);
+    let body = match &markdown {
+        Some(markdown) => {
+            detected = Detected { kind: Kind::Text, language: None, title: detect::detect_text(markdown).title };
+            format!("{markdown}\n")
+        }
+        None => body_for_text(text, &detected),
+    };
     let body_hash = library::text_hash(&body);
     let source = (detected.kind == Kind::Url).then(|| text.trim().to_string());
     let existing = db.with(|conn| match &source {
@@ -46,6 +60,24 @@ pub fn text(library: &Library, db: &Db, text: &str, force: bool) -> Result<Saved
 
     let meta = new_meta(&detected, body_hash, source);
     write(library, db, meta, body, &[])
+}
+
+/// Markdown for clipboard HTML, when it has structure worth keeping (otherwise `None`, and the
+/// plain text is used). Browsers wrap the copied part in fragment comments.
+fn markdown_from_html(html: &str) -> Option<String> {
+    static STRUCTURE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)<(h[1-6]|ul|ol|li|a|table|pre|blockquote|strong|b|em|i)[\s>]").unwrap()
+    });
+    let fragment = match (html.find("<!--StartFragment-->"), html.find("<!--EndFragment-->")) {
+        (Some(start), Some(end)) if start < end => &html[start + "<!--StartFragment-->".len()..end],
+        _ => html,
+    };
+    if !STRUCTURE.is_match(fragment) {
+        return None;
+    }
+    let markdown = crate::extract::html_to_markdown(fragment)?;
+    let markdown = markdown.trim();
+    (markdown.chars().filter(|c| c.is_alphabetic()).count() >= 3).then(|| markdown.to_string())
 }
 
 /// An image or file to save, as captured.
@@ -92,8 +124,8 @@ pub fn files(library: &Library, db: &Db, originals: &[Original], note: &str, for
     } else if originals.len() > 1 {
         detected.title = format!("{} and {} more", detected.title, originals.len() - 1);
     }
-    // No text is extracted from the files yet (OCR, PDF text come in M1), so the body is just
-    // the user's note.
+    // The text of the files is read in the background afterwards (`extract`), so the body starts
+    // as just the user's note.
     let body = if note.is_empty() { String::new() } else { format!("{note}\n") };
     let mut meta = new_meta(&detected, library::text_hash(&body), None);
     meta.asset_hash = Some(asset_hash);
@@ -188,14 +220,18 @@ fn body_for_text(text: &str, detected: &Detected) -> String {
     format!("{body}\n")
 }
 
-/// File extension for the stored original: from the name, else from the MIME type.
+/// File extension for the stored original: from the name, else from the MIME type. Never `md`:
+/// the original sits next to its note, which is `<same name>.md`, and the library treats every
+/// `.md` file as a note.
 fn extension(name: &str, mime: &str) -> String {
     let from_name = name
         .rsplit_once('.')
         .map(|(_, ext)| ext.to_ascii_lowercase())
         .filter(|ext| !ext.is_empty() && ext.len() <= 8 && ext.chars().all(|c| c.is_ascii_alphanumeric()));
-    from_name.unwrap_or_else(|| {
+    let ext = from_name.unwrap_or_else(|| {
         match mime {
+            "text/markdown" => "markdown",
+            "text/plain" => "txt",
             "image/png" => "png",
             "image/jpeg" => "jpg",
             "image/gif" => "gif",
@@ -204,7 +240,8 @@ fn extension(name: &str, mime: &str) -> String {
             _ => "bin",
         }
         .to_string()
-    })
+    });
+    if ext == "md" { "markdown".to_string() } else { ext }
 }
 
 #[cfg(test)]
@@ -246,6 +283,22 @@ mod tests {
 
         let link = saved_item(text(&library, &db, " https://example.com/post ", false).unwrap());
         assert_eq!(link.source_url.as_deref(), Some("https://example.com/post"));
+    }
+
+    #[test]
+    fn rich_html_keeps_its_structure_as_markdown() {
+        let (_dir, library, db) = setup();
+        let html = "<meta charset='utf-8'><!--StartFragment--><h2>Sourdough basics</h2><ul><li>Flour</li><li><a href=\"https://example.com\">Starter</a></li></ul><!--EndFragment-->";
+        let item = saved_item(rich_text(&library, &db, "Sourdough basics\nFlour\nStarter", Some(html), false).unwrap());
+        assert_eq!((item.kind, item.title.as_str()), (Kind::Text, "Sourdough basics"));
+        let note = library.read_note(&library.absolute(&item.path)).unwrap();
+        assert!(note.body.contains("## Sourdough basics") && note.body.contains("[Starter](https://example.com)"), "{}", note.body);
+
+        // HTML with no structure, or for code, is ignored: the plain text is what was copied.
+        let plain = saved_item(rich_text(&library, &db, "just some words", Some("<div><span>just some words</span></div>"), false).unwrap());
+        assert_eq!(library.read_note(&library.absolute(&plain.path)).unwrap().body, "just some words\n");
+        let code = saved_item(rich_text(&library, &db, "fn main() {\n    let x = 5;\n}", Some("<pre><b>fn</b> main</pre>"), false).unwrap());
+        assert_eq!(code.kind, Kind::Code);
     }
 
     #[test]

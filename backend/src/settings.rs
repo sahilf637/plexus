@@ -22,6 +22,8 @@ pub struct Settings {
     /// Download the web page behind a saved link, so it can be searched and linked by what it
     /// says. Off keeps links as they were pasted, with no requests made.
     pub fetch_links: bool,
+    /// Save text copied anywhere, without pasting it into Plexus. Off by default.
+    pub watch_clipboard: bool,
 }
 
 /// What the global shortcut does.
@@ -44,6 +46,7 @@ impl Default for Settings {
             hotkey_action: HotkeyAction::default(),
             start_at_login: true,
             fetch_links: true,
+            watch_clipboard: false,
         }
     }
 }

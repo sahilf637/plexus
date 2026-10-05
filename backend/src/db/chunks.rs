@@ -55,6 +55,31 @@ pub fn best_per_item(neighbours: impl IntoIterator<Item = Neighbour>, exclude: &
     best
 }
 
+/// The item's stored text (its chunks joined), cut to `max_chars`.
+pub fn text_of(conn: &Connection, item_id: &str, max_chars: usize) -> Result<String> {
+    let mut stmt = conn.prepare("SELECT text FROM chunks WHERE item_id = ?1 ORDER BY ord")?;
+    let rows = stmt.query_map([item_id], |row| row.get::<_, String>(0))?;
+    let mut text = String::new();
+    for chunk in rows {
+        text.push_str(&chunk?);
+        text.push('\n');
+        if text.len() >= max_chars {
+            break;
+        }
+    }
+    Ok(text)
+}
+
+/// How many items contain the word (a plain alphanumeric word) in their title or body.
+pub fn items_with_word(conn: &Connection, word: &str) -> Result<usize> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM items_fts WHERE items_fts MATCH ?1",
+        [format!("\"{word}\"")],
+        |row| row.get(0),
+    )?;
+    Ok(count as usize)
+}
+
 pub fn get_meta(conn: &Connection, key: &str) -> Result<Option<String>> {
     Ok(conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |row| row.get(0)).optional()?)
 }

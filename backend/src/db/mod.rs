@@ -92,6 +92,15 @@ const MIGRATIONS: &[&str] = &[r#"
     ALTER TABLE edges ADD COLUMN tier TEXT NOT NULL DEFAULT 'related';
     -- Set when an item could only be linked by its name (a file with no text yet).
     ALTER TABLE items ADD COLUMN name_only INTEGER NOT NULL DEFAULT 0;
+"#, r#"
+    -- Links made by hand, copied from the `links:` of the note that holds them (`src`). No
+    -- foreign keys: a link to a deleted item comes back if the item is restored.
+    CREATE TABLE user_links (
+        src TEXT NOT NULL,
+        dst TEXT NOT NULL,
+        PRIMARY KEY (src, dst)
+    );
+    CREATE INDEX user_links_dst ON user_links(dst);
 "#];
 
 pub struct Db {

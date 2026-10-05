@@ -1,5 +1,6 @@
-// Downloads the embedding model Plexus ships with (it links items by meaning, offline) into
-// backend/resources/models/bge-small-en-v1.5/, checking every file's SHA-256.
+// Downloads the models Plexus ships with into backend/resources/models/: the embedding model
+// (links items by meaning, offline) and the OCR models (read text in images), checking every
+// file's SHA-256.
 //
 // Runs before `npm run dev` and `npm run build`. Files already present and correct are skipped,
 // so rerunning it is cheap.
@@ -25,21 +26,32 @@ const FILES = [
   ['tokenizer_config.json', 'tokenizer_config.json', '9261e7d79b44c8195c1cada2b453e55b00aeb81e907a6664974b4d7776172ab3'],
 ]
 
+// OCR models for reading text in images (https://github.com/robertknight/ocrs, MIT/Apache-2.0).
+const OCR_BASE = 'https://ocrs-models.s3-accelerate.amazonaws.com'
+const OCR_FILES = [
+  ['text-detection.rten', 'f15cfb56bd02c4bf478a20343986504a1f01e1665c2b3a0ad66340f054b1b5ca'],
+  ['text-recognition.rten', 'e484866d4cce403175bd8d00b128feb08ab42e208de30e42cd9889d8f1735a6e'],
+]
+
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const outDir = join(root, 'backend', 'resources', 'models', 'bge-small-en-v1.5')
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')
 
-await mkdir(outDir, { recursive: true })
-for (const [source, name, expected] of FILES) {
+const downloads = [
+  ...FILES.map(([source, name, sha]) => [join(root, 'backend', 'resources', 'models', 'bge-small-en-v1.5'), name, `${BASE}/${source}`, sha]),
+  ...OCR_FILES.map(([name, sha]) => [join(root, 'backend', 'resources', 'models', 'ocrs'), name, `${OCR_BASE}/${name}`, sha]),
+]
+
+for (const [outDir, name, url, expected] of downloads) {
+  await mkdir(outDir, { recursive: true })
   const dest = join(outDir, name)
   if (existsSync(dest) && sha256(await readFile(dest)) === expected) continue
 
   process.stdout.write(`Fetching ${name}… `)
-  const response = await fetch(`${BASE}/${source}`)
-  if (!response.ok) throw new Error(`${source}: HTTP ${response.status}`)
+  const response = await fetch(url)
+  if (!response.ok) throw new Error(`${name}: HTTP ${response.status}`)
   const bytes = Buffer.from(await response.arrayBuffer())
   const actual = sha256(bytes)
-  if (actual !== expected) throw new Error(`${source}: checksum mismatch (got ${actual})`)
+  if (actual !== expected) throw new Error(`${name}: checksum mismatch (got ${actual})`)
   // Write then rename, so an interrupted download never leaves a bad file in place.
   await writeFile(`${dest}.partial`, bytes)
   await rename(`${dest}.partial`, dest)

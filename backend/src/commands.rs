@@ -4,13 +4,14 @@ use std::borrow::Cow;
 use std::path::PathBuf;
 
 use tauri::ipc::{InvokeBody, Request, Response};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::capture::detect::{self, Kind};
 use crate::capture::{self, CaptureResult, Preview, clipboard, hotkey, save};
 use crate::db::graph;
 use crate::db::items::{self, Item};
 use crate::error::{Error, Result};
+use crate::library::{links, trash};
 use crate::settings::Settings;
 use crate::state::AppState;
 use crate::windows;
@@ -77,8 +78,15 @@ pub fn capture_preview(text: String) -> Preview {
 }
 
 #[tauri::command]
-pub fn capture_text(app: AppHandle, state: State<'_, AppState>, text: String, force: bool) -> Result<CaptureResult> {
-    timed("text", || save::text(&state.library, &state.db, &text, force)).map(|saved| capture::announce(&app, saved))
+pub fn capture_text(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    text: String,
+    force: bool,
+    html: Option<String>,
+) -> Result<CaptureResult> {
+    timed("text", || save::rich_text(&state.library, &state.db, &text, html.as_deref(), force))
+        .map(|saved| capture::announce(&app, saved))
 }
 
 /// Files dropped onto a window, or copied in a file manager, by path, with an optional note.
@@ -168,6 +176,8 @@ pub struct ItemDetail {
     asset_file: Option<PathBuf>,
     /// More originals saved with it, after the first.
     attachments: Vec<AttachmentDetail>,
+    /// Text read out of the original (a PDF's pages, an image's words), apart from the note.
+    extracted_text: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -195,7 +205,9 @@ pub fn get_item(state: State<'_, AppState>, id: String) -> Result<ItemDetail> {
             AttachmentDetail { kind, size: a.size, file: note_path.with_file_name(&a.file), name }
         })
         .collect();
-    Ok(ItemDetail { item, body: note.body, asset_file, attachments })
+    let (own, extracted) = crate::extract::split_body(&note.body);
+    let (body, extracted_text) = (own.to_string(), extracted.map(str::to_string));
+    Ok(ItemDetail { item, body, asset_file, attachments, extracted_text })
 }
 
 /// Everything the map draws: items, edges and saved positions.
@@ -251,6 +263,58 @@ pub fn open_source(app: AppHandle, state: State<'_, AppState>, id: String) -> Re
         return Err(Error::Invalid("only web links can be opened".into()));
     }
     app.opener().open_url(url, None::<&str>).map_err(|e| Error::Invalid(e.to_string()))
+}
+
+/// Deletes items: their files go to the library's trash and the map drops them. The result
+/// carries the batch to pass to `restore_items` for Undo.
+#[tauri::command]
+pub fn delete_items(app: AppHandle, state: State<'_, AppState>, ids: Vec<String>) -> Result<trash::Deleted> {
+    let deleted = trash::delete_items(&state.library, &state.db, &ids)?;
+    if !deleted.ids.is_empty() {
+        let _ = app.emit("items-deleted", &deleted.ids);
+    }
+    Ok(deleted)
+}
+
+/// Undo of `delete_items`: puts the files back; the items are linked again as they return.
+#[tauri::command]
+pub fn restore_items(app: AppHandle, state: State<'_, AppState>, batch: String) -> Result<usize> {
+    let restored = trash::restore_items(&state.library, &state.db, &batch)?;
+    for item in &restored {
+        let _ = app.emit("item-added", item);
+        state.process_later(item);
+    }
+    Ok(restored.len())
+}
+
+/// What the map needs to redraw after a hand-made link changes: every link touching these items.
+#[derive(Clone, serde::Serialize)]
+struct LinksChanged {
+    ids: Vec<String>,
+    edges: Vec<graph::Edge>,
+}
+
+fn announce_links(app: &AppHandle, ids: [&str; 2], edges: Vec<graph::Edge>, state: &AppState) -> Result<()> {
+    let mut all = edges;
+    all.extend(state.db.with(|conn| graph::edges_of(conn, ids[1]))?);
+    let mut seen = std::collections::HashSet::new();
+    all.retain(|e| seen.insert((e.src.clone(), e.dst.clone(), e.kind.clone())));
+    let _ = app.emit("links-changed", LinksChanged { ids: ids.map(String::from).to_vec(), edges: all });
+    Ok(())
+}
+
+/// Links two items by hand (kept in the note of `from`). Hand-made links are always strong.
+#[tauri::command]
+pub fn link_items(app: AppHandle, state: State<'_, AppState>, from: String, to: String) -> Result<()> {
+    let edges = links::add(&state.library, &state.db, &from, &to)?;
+    announce_links(&app, [&from, &to], edges, &state)
+}
+
+/// Removes a link made by hand.
+#[tauri::command]
+pub fn unlink_items(app: AppHandle, state: State<'_, AppState>, a: String, b: String) -> Result<()> {
+    let edges = links::remove(&state.library, &state.db, &a, &b)?;
+    announce_links(&app, [&a, &b], edges, &state)
 }
 
 fn find_item(state: &AppState, id: &str) -> Result<Item> {

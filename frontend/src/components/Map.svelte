@@ -8,14 +8,18 @@
     selected,
     matches,
     lowestTier,
+    marked,
     onselect,
+    onmenu,
     onplaced,
   }: {
     data: MapData
     selected: string | null
     matches: string[] | null
     lowestTier: Tier
-    onselect: (id: string | null) => void
+    marked: string[]
+    onselect: (id: string | null, additive: boolean) => void
+    onmenu: (id: string, x: number, y: number) => void
     onplaced: (positions: Position[]) => void
   } = $props()
 
@@ -24,6 +28,10 @@
 
   export function addItem(item: Item) {
     map?.addItem(item)
+  }
+
+  export function removeItems(ids: string[]) {
+    map?.removeItems(ids)
   }
 
   export function setEdges(edges: Edge[]) {
@@ -39,13 +47,21 @@
   }
 
   onMount(() => {
-    map = new MapController(container!, { select: (id) => onselect(id), placed: (p) => onplaced(p) })
+    map = new MapController(container!, {
+      select: (id, additive = false) => onselect(id, additive),
+      menu: (id, x, y) => onmenu(id, x, y),
+      placed: (p) => onplaced(p),
+    })
     map.load($state.snapshot(data))
     return () => map?.destroy()
   })
 
   $effect(() => {
     map?.select(selected)
+  })
+
+  $effect(() => {
+    map?.setMarked(marked)
   })
 
   $effect(() => {

@@ -1,7 +1,7 @@
 // The only module that talks to the Rust side. Outside Tauri (`npm run dev:ui`) every call
 // goes to an in-memory mock instead, so the UI can be built in a plain browser.
 
-import type { CaptureResult, HotkeyStatus, Item, ItemDetail, MapData, Position, Preview, Settings } from './types'
+import type { CaptureResult, Deleted, HotkeyStatus, Item, ItemDetail, MapData, Position, Preview, Settings } from './types'
 import * as mock from './mock/backend'
 
 export const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
@@ -46,8 +46,9 @@ export const pastedFiles = (text: string) => call<string[]>('pasted_files', { te
 export const clipboardFiles = () => call<string[]>('clipboard_files')
 
 export const capturePreview = (text: string) => call<Preview>('capture_preview', { text })
-export const captureText = (text: string, force = false) =>
-  call<CaptureResult>('capture_text', { text, force })
+/** `html` is the same copy as rich text, when the source had it (kept as markdown if structured). */
+export const captureText = (text: string, force = false, html?: string) =>
+  call<CaptureResult>('capture_text', { text, force, html })
 /** A file by path, with an optional note about it (`force` keeps a note that looks like a secret). */
 export const captureFile = (path: string, note = '', force = false) =>
   call<CaptureResult>('capture_file', { path, note, force })
@@ -60,6 +61,14 @@ export const search = (query: string) => call<string[]>('search', { query })
 /** Opens the item's original (or its note); `attachment` picks one of the extra originals. */
 export const openItemFile = (id: string, attachment?: number) => call<void>('open_item_file', { id, attachment })
 export const openSource = (id: string) => call<void>('open_source', { id })
+/** Links two items by hand (kept in the note of `from`); such links are always strong. */
+export const linkItems = (from: string, to: string) => call<void>('link_items', { from, to })
+/** Removes a link made by hand. */
+export const unlinkItems = (a: string, b: string) => call<void>('unlink_items', { a, b })
+/** Moves items (and their files) to the library's trash. Undo with `restoreItems(batch)`. */
+export const deleteItems = (ids: string[]) => call<Deleted>('delete_items', { ids })
+/** Puts a deleted batch back; the items are linked again. Resolves to how many came back. */
+export const restoreItems = (batch: string) => call<number>('restore_items', { batch })
 
 /** A URL the webview can load a library file from (images in the item panel). */
 export async function fileUrl(path: string): Promise<string> {

@@ -7,6 +7,7 @@ pub mod detect;
 pub mod hotkey;
 pub mod save;
 pub mod secrets;
+pub mod watch;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};

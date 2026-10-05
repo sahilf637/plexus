@@ -13,6 +13,8 @@ export interface Settings {
   startAtLogin: boolean
   /** Download the web page behind a saved link so it can be searched and linked. */
   fetchLinks: boolean
+  /** Save text copied anywhere, without pasting it into Plexus. */
+  watchClipboard: boolean
 }
 
 export interface HotkeyStatus {
@@ -68,6 +70,8 @@ export interface ItemDetail extends Item {
   assetFile: string | null
   /** More originals saved with it, after the first. */
   attachments: { name: string; file: string; kind: Kind; size: number | null }[]
+  /** Text read out of the original (a PDF's pages, an image's words), apart from the note. */
+  extractedText?: string | null
 }
 
 /** How sure a link is. */
@@ -93,6 +97,18 @@ export interface MapData {
   items: Item[]
   edges: Edge[]
   positions: Position[]
+}
+
+/** Items moved to the trash; `batch` restores them. */
+export interface Deleted {
+  batch: string
+  ids: string[]
+}
+
+/** Sent when a link made by hand is added or removed: every link touching these items, now. */
+export interface LinksChanged {
+  ids: string[]
+  edges: Edge[]
 }
 
 /** Sent when the background pipeline has linked an item. */

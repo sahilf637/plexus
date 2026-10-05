@@ -20,7 +20,10 @@ const TIER_STYLE: Record<Tier, { size: number; weight: number }> = {
 }
 
 export interface MapEvents {
-  select: (id: string | null) => void
+  /** A click on an item (`additive`: with Shift, to build a selection) or on empty space. */
+  select: (id: string | null, additive?: boolean) => void
+  /** Right-click on an item, at these pixel coordinates in the map. */
+  menu: (id: string, x: number, y: number) => void
   /** Positions decided by the map (new items), to be saved. */
   placed: (positions: Position[]) => void
 }
@@ -87,6 +90,8 @@ export class MapController {
   private layout: FA2Layout | undefined
   private burstTimer: ReturnType<typeof setTimeout> | undefined
   private selected: string | null = null
+  /** Items picked together (Shift-click), e.g. to delete them in one go. */
+  private marked = new Set<string>()
   private matches: Set<string> | null = null
   private events: MapEvents
   private themeQuery = window.matchMedia('(prefers-color-scheme: dark)')
@@ -126,8 +131,14 @@ export class MapController {
       container.style.cursor = ''
       this.sigma.refresh({ skipIndexation: true })
     })
-    this.sigma.on('clickNode', ({ node }) => this.events.select(node))
+    this.sigma.on('clickNode', ({ node, event }) => this.events.select(node, 'shiftKey' in event.original && event.original.shiftKey))
     this.sigma.on('clickStage', () => this.events.select(null))
+    this.sigma.on('rightClickNode', ({ node, event }) => {
+      event.original.preventDefault()
+      this.events.menu(node, event.x, event.y)
+    })
+    // The webview's own menu (Reload, Inspect…) has no place on the map.
+    this.sigma.on('rightClickStage', ({ event }) => event.original.preventDefault())
     this.themeQuery.addEventListener('change', this.onThemeChange)
     this.resizeObserver.observe(container)
   }
@@ -174,12 +185,31 @@ export class MapController {
       const { size, weight } = TIER_STYLE[edge.tier]
       this.graph.addEdge(edge.src, edge.dst, { size, weight, tier: edge.tier, color: this.edgeColor(edge.tier) })
     }
-    // Items with many sure links are drawn bigger; maybes don't count.
+    this.resizeNodes()
+  }
+
+  /** Items with many sure links are drawn bigger; maybes don't count. */
+  private resizeNodes() {
     this.graph.forEachNode((node) => {
       let links = 0
       this.graph.forEachEdge(node, (_, attrs) => (links += attrs.tier === 'maybe' ? 0 : 1))
       this.graph.setNodeAttribute(node, 'size', nodeSize(links))
     })
+  }
+
+  /** Items were deleted: they and their links leave the map; the rest stays where it is. */
+  removeItems(ids: string[]) {
+    // A running layout holds on to the nodes it is moving.
+    this.layout?.kill()
+    this.layout = undefined
+    for (const id of ids) {
+      if (this.graph.hasNode(id)) this.graph.dropNode(id)
+      this.marked.delete(id)
+      if (this.hovered === id) this.hovered = null
+      if (this.selected === id) this.selected = null
+    }
+    this.resizeNodes()
+    this.sigma.refresh()
   }
 
   /** Shows links down to `tier`: strong only, strong and related, or everything. */
@@ -277,6 +307,12 @@ export class MapController {
     if (id) this.focus(id, true)
   }
 
+  /** Items picked together; they are drawn like the selected one. */
+  setMarked(ids: string[]) {
+    this.marked = new Set(ids)
+    this.sigma.refresh({ skipIndexation: true })
+  }
+
   /** Search results: everything else is dimmed. `null` clears the search. */
   setMatches(ids: string[] | null) {
     this.matches = ids ? new Set(ids) : null
@@ -348,7 +384,7 @@ export class MapController {
     } else {
       result.zIndex = 1
     }
-    if (node === this.selected || node === this.hovered) {
+    if (node === this.selected || node === this.hovered || this.marked.has(node)) {
       result.highlighted = true
       result.forceLabel = true
       result.zIndex = 2

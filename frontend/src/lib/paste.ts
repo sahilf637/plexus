@@ -5,7 +5,7 @@
 import { clipboardFiles, clipboardImage, pastedFiles } from './api'
 
 export type Pasted =
-  | { kind: 'text'; text: string }
+  | { kind: 'text'; text: string; html?: string }
   | { kind: 'blob'; blob: Blob; name: string }
   | { kind: 'path'; path: string }
 
@@ -14,6 +14,8 @@ export type Pasted =
 export interface PasteSnapshot {
   files: File[]
   plain: string
+  /** The same copy as rich text, if the source offered it. */
+  html: string
   uriList: string
   hasImageType: boolean
 }
@@ -22,6 +24,7 @@ export function snapshot(data: DataTransfer): PasteSnapshot {
   return {
     files: [...data.items].filter((item) => item.kind === 'file').flatMap((item) => item.getAsFile() ?? []),
     plain: data.getData('text/plain'),
+    html: data.getData('text/html'),
     uriList: data.getData('text/uri-list'),
     hasImageType: data.types.some((type) => type.startsWith('image/')),
   }
@@ -57,5 +60,5 @@ export async function resolve(s: PasteSnapshot): Promise<Pasted[]> {
     const image = await clipboardImage().catch(() => null)
     if (image) return [{ kind: 'blob', blob: image, name: 'Pasted image.png' }]
   }
-  return s.plain.trim() ? [{ kind: 'text', text: s.plain }] : []
+  return s.plain.trim() ? [{ kind: 'text', text: s.plain, html: s.html || undefined }] : []
 }

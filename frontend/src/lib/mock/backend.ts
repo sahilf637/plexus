@@ -1,7 +1,7 @@
 // In-memory stand-in for the Rust backend, used by `npm run dev:ui`. Detection here is a rough
 // approximation, good enough to exercise the UI; the real rules live in Rust.
 
-import type { CaptureResult, Edge, HotkeyStatus, Item, ItemDetail, ItemLinked, Kind, MapData, Position, Preview, Settings, Tier } from '../types'
+import type { CaptureResult, Deleted, Edge, HotkeyStatus, Item, ItemDetail, ItemLinked, Kind, MapData, Position, Preview, Settings, Tier } from '../types'
 import { sampleItems } from './samples'
 
 let settings: Settings = {
@@ -10,10 +10,13 @@ let settings: Settings = {
   hotkeyAction: 'openCapture',
   startAtLogin: true,
   fetchLinks: true,
+  watchClipboard: false,
 }
 
 const items: ItemDetail[] = sampleItems()
 const positions = new Map<string, Position>()
+/** Deleted items, by batch, until restored. */
+const trash = new Map<string, { items: ItemDetail[] }>()
 
 /** `?map=map.local.json` loads a real library's map (from `npm run export-map`) instead of the
  * samples. Links then stay as exported; new items are linked by the word-overlap stand-in. */
@@ -37,13 +40,24 @@ function linksFor(item: ItemDetail): Edge[] {
       const shared = [...words(other)].filter((w) => mine.has(w)).length
       const weight = Math.min(0.85, 0.55 + 0.08 * shared)
       const tier: Tier = weight >= 0.72 ? 'strong' : weight >= 0.67 ? 'related' : 'maybe'
-      return { src: item.id, dst: other.id, kind: 'similar', weight, tier, reason: null, shared }
+      const common = [...words(other)].filter((w) => mine.has(w)).slice(0, 3)
+      const reason = common.length ? `both mention ${common.join(', ')}` : null
+      return { src: item.id, dst: other.id, kind: 'similar', weight, tier, reason, shared }
     })
     .filter((e) => e.shared > 0)
     .map(({ shared: _, ...edge }) => edge)
 }
 
-function allEdges(): Edge[] {
+/** Links made by hand: [from, to]. */
+const userLinks: [string, string][] = []
+const userEdges = (): Edge[] =>
+  userLinks
+    .filter(([a, b]) => items.some((i) => i.id === a) && items.some((i) => i.id === b))
+    .map(([src, dst]) => ({ src, dst, kind: 'user', weight: 1, tier: 'strong', reason: 'linked by you' }))
+const edgesTouching = (...ids: string[]) =>
+  [...userEdges(), ...(exported?.edges ?? allSimilar())].filter((e) => ids.includes(e.src) || ids.includes(e.dst))
+
+function allSimilar(): Edge[] {
   const seen = new Set<string>()
   return items.flatMap(linksFor).filter((e) => {
     const key = [e.src, e.dst].sort().join('|')
@@ -169,7 +183,7 @@ const commands: Record<string, Command> = {
   list_items: (): Item[] => items,
   get_map: async (): Promise<MapData> => {
     if (mapUrl) exported ??= await loadExported(mapUrl)
-    const edges = exported?.edges ?? allEdges()
+    const edges = [...userEdges(), ...(exported?.edges ?? allSimilar())]
     return { items, edges, positions: [...positions.values()] }
   },
   save_layout: (args) => (args.positions as Position[]).forEach((p) => positions.set(p.id, p)),
@@ -179,6 +193,38 @@ const commands: Record<string, Command> = {
     return items
       .filter((i) => words.every((w) => `${i.title} ${i.body}`.toLowerCase().includes(w)))
       .map((i) => i.id)
+  },
+  link_items: (args) => {
+    const [from, to] = [String(args.from), String(args.to)]
+    if (from !== to && !userLinks.some(([a, b]) => a === from && b === to)) userLinks.push([from, to])
+    emit('links-changed', { ids: [from, to], edges: edgesTouching(from, to) })
+  },
+  unlink_items: (args) => {
+    const [a, b] = [String(args.a), String(args.b)]
+    for (let i = userLinks.length - 1; i >= 0; i--) {
+      const [x, y] = userLinks[i]
+      if ((x === a && y === b) || (x === b && y === a)) userLinks.splice(i, 1)
+    }
+    emit('links-changed', { ids: [a, b], edges: edgesTouching(a, b) })
+  },
+  delete_items: (args): Deleted => {
+    const ids = (args.ids as string[]).filter((id) => items.some((i) => i.id === id))
+    const batch = crypto.randomUUID().replace(/-/g, '').toUpperCase()
+    trash.set(batch, { items: items.filter((i) => ids.includes(i.id)) })
+    for (const id of ids) items.splice(items.findIndex((i) => i.id === id), 1)
+    if (ids.length) emit('items-deleted', ids)
+    return { batch, ids }
+  },
+  restore_items: (args): number => {
+    const batch = trash.get(args.batch as string)
+    if (!batch) throw new Error('this was deleted too long ago to restore')
+    trash.delete(args.batch as string)
+    for (const item of batch.items) {
+      items.push(item)
+      emit('item-added', item)
+      setTimeout(() => emit('item-linked', { id: item.id, status: 'linked', edges: linksFor(item), related: [] } satisfies ItemLinked), 300)
+    }
+    return batch.items.length
   },
   open_item_file: () => {},
   open_source: (args) => void window.open(items.find((i) => i.id === args.id)?.sourceUrl ?? '', '_blank'),
