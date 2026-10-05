@@ -3,7 +3,7 @@
 //! linked, so it is related by what it says rather than by its name.
 
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::Instant;
 
 use tauri::{AppHandle, Emitter, Manager};
@@ -17,6 +17,9 @@ use crate::library::Library;
 use crate::error::{Error, Result};
 use crate::library::reconcile::{item_from_note, modified_nanos};
 use crate::state::AppState;
+
+/// How long the OCR models stay loaded after the last image.
+const IDLE_UNLOAD: std::time::Duration = std::time::Duration::from_secs(120);
 
 pub struct Extractor {
     queue: Sender<String>,
@@ -47,11 +50,17 @@ pub fn needs_extraction(item: &Item) -> bool {
 pub fn run(app: &AppHandle, queue: Receiver<String>) {
     let app = app.clone();
     let worker = move || {
-        while let Ok(id) = queue.recv() {
-            if let Err(e) = process(&app, &id) {
-                tracing::warn!(id, "couldn't read the file's text: {e}");
-                // Link it as it is rather than leave it waiting.
-                app.state::<AppState>().pipeline.enqueue(&id);
+        loop {
+            match queue.recv_timeout(IDLE_UNLOAD) {
+                Ok(id) => {
+                    if let Err(e) = process(&app, &id) {
+                        tracing::warn!(id, "couldn't read the file's text: {e}");
+                        // Link it as it is rather than leave it waiting.
+                        app.state::<AppState>().pipeline.enqueue(&id);
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => app.state::<AppState>().extractor.ocr.unload(),
+                Err(RecvTimeoutError::Disconnected) => break,
             }
         }
     };

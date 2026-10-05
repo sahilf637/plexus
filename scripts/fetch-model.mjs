@@ -26,11 +26,13 @@ const FILES = [
   ['tokenizer_config.json', 'tokenizer_config.json', '9261e7d79b44c8195c1cada2b453e55b00aeb81e907a6664974b4d7776172ab3'],
 ]
 
-// OCR models for reading text in images (https://github.com/robertknight/ocrs, MIT/Apache-2.0).
-const OCR_BASE = 'https://ocrs-models.s3-accelerate.amazonaws.com'
+// OCR models for reading text in images: PaddleOCR PP-OCRv6 small (Apache-2.0), as packaged by
+// RapidOCR (https://github.com/RapidAI/RapidOCR). Listed with the same names `rapidocr-core` expects.
+const OCR_BASE = 'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve'
 const OCR_FILES = [
-  ['text-detection.rten', 'f15cfb56bd02c4bf478a20343986504a1f01e1665c2b3a0ad66340f054b1b5ca'],
-  ['text-recognition.rten', 'e484866d4cce403175bd8d00b128feb08ab42e208de30e42cd9889d8f1735a6e'],
+  ['v3.9.0/onnx/PP-OCRv6/det/PP-OCRv6_det_small.onnx', 'PP-OCRv6_det_small.onnx', '090f04abcd9d9a7498bc4ebf677e4cb9bdce1fe4197ddb7e529f1ef44e1ff94f'],
+  ['v3.9.0/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx', 'PP-OCRv6_rec_small.onnx', '6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884'],
+  ['master/paddle/PP-OCRv6/rec/PP-OCRv6_rec_small/ppocrv6_dict.txt', 'ppocrv6_dict.txt', 'b5f2bfe2bdd9448429e3e82b51c789775d9b42f2403d082b00662eb77e401c5d'],
 ]
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -38,7 +40,7 @@ const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')
 
 const downloads = [
   ...FILES.map(([source, name, sha]) => [join(root, 'backend', 'resources', 'models', 'bge-small-en-v1.5'), name, `${BASE}/${source}`, sha]),
-  ...OCR_FILES.map(([name, sha]) => [join(root, 'backend', 'resources', 'models', 'ocrs'), name, `${OCR_BASE}/${name}`, sha]),
+  ...OCR_FILES.map(([path, name, sha]) => [join(root, 'backend', 'resources', 'models', 'ppocr'), name, `${OCR_BASE}/${path}`, sha]),
 ]
 
 for (const [outDir, name, url, expected] of downloads) {

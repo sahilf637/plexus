@@ -42,8 +42,9 @@ at build time by `scripts/fetch-model.mjs`.
 Runs the embedding model. Microsoft, MIT license (https://github.com/microsoft/onnxruntime),
 linked through the `ort` crate (MIT/Apache-2.0).
 
-## ocrs text recognition models
+## PP-OCRv6 text recognition models
 
-The bundled OCR models (`text-detection.rten`, `text-recognition.rten`) and the `ocrs` / `rten`
-crates, by Robert Knight (https://github.com/robertknight/ocrs), MIT or Apache-2.0. Downloaded at
-build time by `scripts/fetch-model.mjs`.
+The bundled OCR models (PP-OCRv6 small detector and recogniser, and their dictionary) by
+PaddlePaddle (https://github.com/PaddlePaddle/PaddleOCR), Apache-2.0, as converted to ONNX by
+RapidOCR (https://github.com/RapidAI/RapidOCR), Apache-2.0, and run through the `rapidocr-core`
+crate. Downloaded at build time by `scripts/fetch-model.mjs`.
