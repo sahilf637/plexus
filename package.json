@@ -1,0 +1,20 @@
+{
+  "name": "plexus",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Copy anything. Your second brain wires itself.",
+  "license": "MIT",
+  "workspaces": [
+    "frontend"
+  ],
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "dev:ui": "npm run dev -w frontend",
+    "check": "npm run check -w frontend",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.1"
+  }
+}

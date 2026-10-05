@@ -1,0 +1,54 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Plexus",
+  "version": "0.1.0",
+  "identifier": "io.github.sahilf637.plexus",
+  "build": {
+    "frontendDist": "../frontend/dist",
+    "devUrl": "http://localhost:1430",
+    "beforeDevCommand": "npm run dev -w frontend",
+    "beforeBuildCommand": "npm run build -w frontend"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Plexus",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 640,
+        "minHeight": 400,
+        "visible": false
+      },
+      {
+        "label": "capture",
+        "title": "Add to Plexus",
+        "url": "capture.html",
+        "width": 640,
+        "height": 380,
+        "visible": false,
+        "decorations": false,
+        "resizable": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: http://asset.localhost; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "category": "Productivity",
+    "shortDescription": "Copy anything. Your second brain wires itself."
+  }
+}

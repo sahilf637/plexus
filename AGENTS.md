@@ -9,7 +9,7 @@ See [docs/OVERVIEW.md](docs/OVERVIEW.md) for the product and technical design.
 
 ## Status
 
-Pre-scaffold, working on milestone M0 ([docs/plans/M0.md](docs/plans/M0.md)). Update this section and
+Scaffolded; working on milestone M0 ([docs/plans/M0.md](docs/plans/M0.md)). Update this section and
 **Commands** below as soon as the app is scaffolded.
 
 ## Principles
@@ -119,4 +119,17 @@ Plexus is its own codebase, written fresh.
 
 ## Commands
 
-_To be filled in once the app is scaffolded._
+Run from the repo root (npm workspace). Needs Node 20+, Rust 1.90+, and
+[Tauri's system libraries](https://v2.tauri.app/start/prerequisites/).
+
+```bash
+npm install          # install all dependencies
+npm run dev          # desktop app with hot reload (Vite on port 1430)
+npm run dev:ui       # UI only, in a browser, against the in-memory mock backend
+npm run check        # typecheck the frontend
+npm run build        # production bundle
+cd backend && cargo test && cargo clippy --all-targets
+```
+
+`plexus --capture` opens the capture window (forwarded to the running instance);
+`plexus --hidden` starts in the tray (used for start at login, which is skipped in debug builds).

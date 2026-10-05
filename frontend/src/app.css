@@ -1,0 +1,70 @@
+:root {
+  color-scheme: light dark;
+
+  --bg: #f7f7f8;
+  --surface: #ffffff;
+  --surface-2: #f0f0f2;
+  --border: #e2e2e6;
+  --text: #1c1c21;
+  --text-muted: #6b6b76;
+  --accent: #5b5bd6;
+  --accent-soft: #e8e8fb;
+  --danger: #d4483b;
+  --warning: #b7791f;
+  --warning-soft: #fdf3e1;
+
+  --radius: 10px;
+  --shadow: 0 8px 30px rgb(0 0 0 / 0.12);
+  --font: system-ui, -apple-system, 'Segoe UI', Ubuntu, Cantarell, sans-serif;
+  --mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'Ubuntu Mono', monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141417;
+    --surface: #1c1c21;
+    --surface-2: #25252b;
+    --border: #2f2f37;
+    --text: #ececf1;
+    --text-muted: #9a9aa6;
+    --accent: #8b8bf0;
+    --accent-soft: #2a2a4a;
+    --danger: #ef6b5e;
+    --warning: #e0a94a;
+    --warning-soft: #3a2f1c;
+    --shadow: 0 8px 30px rgb(0 0 0 / 0.5);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+kbd {
+  font: 12px var(--mono);
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--surface);
+}
