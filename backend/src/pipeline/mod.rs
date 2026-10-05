@@ -6,6 +6,8 @@ pub mod chunk;
 pub mod embed;
 pub mod link;
 pub mod search;
+#[cfg(test)]
+mod tune;
 
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, LazyLock};
@@ -21,6 +23,9 @@ use crate::db::{chunks, graph};
 use crate::error::Result;
 use crate::state::AppState;
 use embed::Embedder;
+
+/// Chunks embedded per item (~40k characters), so a book-length page doesn't hold up the queue.
+const MAX_CHUNKS: usize = 32;
 
 pub struct Pipeline {
     queue: Sender<String>,
@@ -91,6 +96,12 @@ fn prepare(state: &AppState) -> Result<()> {
             chunks::reset_embeddings(conn)?;
             chunks::set_meta(conn, "embed_model", embed::MODEL_ID)?;
         }
+        let version = link::PIPELINE_VERSION.to_string();
+        if chunks::get_meta(conn, "pipeline_version")?.as_deref() != Some(version.as_str()) {
+            tracing::info!(version, "linking rules changed; re-linking everything");
+            chunks::reset_links(conn)?;
+            chunks::set_meta(conn, "pipeline_version", &version)?;
+        }
         Ok((chunks::pending_ids(conn)?, items::unread_links(conn)?))
     })?;
     if !pending.is_empty() {
@@ -115,7 +126,9 @@ fn process(app: &AppHandle, state: &AppState, id: &str) -> Result<()> {
         return Ok(()); // Deleted meanwhile.
     };
     let body = state.library.read_note(&state.library.absolute(&item.path))?.body;
-    let texts = chunk::chunk(&embedding_text(&item, &body));
+    let mut texts = chunk::chunk(&embedding_text(&item, &body));
+    // A long page is linked by its first few thousand words; keyword search still has it all.
+    texts.truncate(MAX_CHUNKS);
 
     let (status, links) = if texts.is_empty() {
         (Status::Unlinkable, Vec::new())

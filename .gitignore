@@ -36,3 +36,4 @@ backend/resources/models/
 *.db-shm
 *.db-wal
 /data/
+*.local.json

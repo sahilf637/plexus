@@ -48,7 +48,10 @@ pub fn run() {
         .setup(|app| {
             let settings = SettingsStore::load(app.path().app_config_dir()?.join("settings.json"))?;
             sync_autostart(app.handle(), &settings.get());
-            let library = Library::open(settings.get().library_path)?;
+            // `PLEXUS_LIBRARY` opens another library for this run, e.g. one made by `npm run seed`.
+            let library_path = std::env::var_os("PLEXUS_LIBRARY").map_or(settings.get().library_path, Into::into);
+            tracing::info!(path = %library_path.display(), "opening library");
+            let library = Library::open(library_path)?;
             let db = Db::open(&library.index_path())?;
             // Lets the map show images straight from the library folder (and nothing else).
             app.asset_protocol_scope().allow_directory(library.root(), true)?;
@@ -146,7 +149,7 @@ pub(crate) fn sync_autostart(app: &AppHandle, settings: &Settings) {
 
 fn init_tracing() {
     // zbus logs harmless proxy-cache warnings for every portal request.
-    let default = if cfg!(debug_assertions) { "info,zbus=error,plexus_lib=debug" } else { "info,zbus=error" };
+    let default = if cfg!(debug_assertions) { "info,zbus=error,html5ever=error,plexus_lib=debug" } else { "info,zbus=error,html5ever=error" };
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default));
     tracing_subscriber::fmt().with_env_filter(filter).init();

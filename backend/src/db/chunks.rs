@@ -79,6 +79,16 @@ pub fn reset_embeddings(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
+/// Drops the links found by meaning (except rejected ones, which stay remembered) so every
+/// item is linked again, e.g. after the linking rules changed.
+pub fn reset_links(conn: &mut Connection) -> Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM edges WHERE provenance = 'embedding' AND status != 'rejected'", [])?;
+    tx.execute("UPDATE items SET status = 'pending'", [])?;
+    tx.commit()?;
+    Ok(())
+}
+
 pub fn pending_ids(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare("SELECT id FROM items WHERE status = 'pending' ORDER BY captured_at")?;
     let rows = stmt.query_map([], |row| row.get(0))?;

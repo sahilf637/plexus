@@ -5,11 +5,11 @@ import Graph from 'graphology'
 import Sigma from 'sigma'
 import EdgeCurveProgram from '@sigma/edge-curve'
 import FA2Layout from 'graphology-layout-forceatlas2/worker'
-import forceAtlas2 from 'graphology-layout-forceatlas2'
 import { animateNodes } from 'sigma/utils'
 import type { EdgeDisplayData, NodeDisplayData, PartialButFor } from 'sigma/types'
 import type { Settings } from 'sigma/settings'
 import { linkStrength } from '../kinds'
+import { forceDuration, forceSettings, groupedStart, rescaled, sunflower } from './layout'
 import type { Edge, Item, MapData, Position } from '../types'
 
 export interface MapEvents {
@@ -31,10 +31,14 @@ interface NodeAttributes {
 const LABEL_MAX = 36
 const PULSE_MS = 2500
 /** New items without links are laid out on a sunflower spiral, in the order they arrived. */
-const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5))
 const SPIRAL_SPACING = 10
 const SETTLE_MS = 600
-const TIDY_MS = 2500
+/** Items move to their group's patch before the force layout takes over. */
+const GROUP_MS = 500
+/** This many items settling in a burst (an import, the first start on a library) gets the whole
+ * map tidied once the burst is over, since one-by-one placement can't form groups at that scale. */
+const BURST_SIZE = 15
+const BURST_QUIET_MS = 2500
 
 function cssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
@@ -60,8 +64,7 @@ function shortLabel(title: string): string {
 }
 
 export function spiralPosition(index: number): { x: number; y: number } {
-  const r = SPIRAL_SPACING * Math.sqrt(index + 0.5)
-  return { x: r * Math.cos(index * GOLDEN_ANGLE), y: r * Math.sin(index * GOLDEN_ANGLE) }
+  return sunflower(index, SPIRAL_SPACING)
 }
 
 export class MapController {
@@ -69,6 +72,9 @@ export class MapController {
   private sigma: Sigma
   private colors = themeColors()
   private hovered: string | null = null
+  private burst = 0
+  private layout: FA2Layout | undefined
+  private burstTimer: ReturnType<typeof setTimeout> | undefined
   private selected: string | null = null
   private matches: Set<string> | null = null
   private events: MapEvents
@@ -127,6 +133,8 @@ export class MapController {
     })
     this.setEdges(data.edges)
     if (placed.length) this.events.placed(placed)
+    // Many items never placed (a library made or synced elsewhere): group them now.
+    if (placed.length >= BURST_SIZE && this.graph.size > 0) void this.tidy()
   }
 
   /** A new item arrives: it appears straight away, pulses, and the camera brings it into view. */
@@ -172,34 +180,69 @@ export class MapController {
       total += weight
     })
     if (!total) return
+    this.noteBurst()
     // Next to the neighbours rather than on top of them.
     const angle = Math.random() * 2 * Math.PI
     const offset = SPIRAL_SPACING * 0.8
     const target = { x: x / total + offset * Math.cos(angle), y: y / total + offset * Math.sin(angle) }
-    animateNodes(this.graph, { [id]: target }, { duration: SETTLE_MS }, () => this.events.placed([{ id, ...target }]))
+    this.moveNodes({ [id]: target }, SETTLE_MS, () => this.events.placed([{ id, ...target }]))
   }
 
   /** Lays the whole map out again by its links, so related items gather into groups. */
   tidy(): Promise<void> {
-    const layout = new FA2Layout(this.graph, {
-      settings: {
-        ...forceAtlas2.inferSettings(this.graph),
-        barnesHutOptimize: this.graph.order > 400,
-        // Room between linked items, so groups stay readable rather than collapsing into a dot.
-        scalingRatio: 40,
-        adjustSizes: true,
-        slowDown: 3,
-      },
-      getEdgeWeight: 'weight',
-    })
-    layout.start()
+    clearTimeout(this.burstTimer)
+    this.burst = 0
+    this.layout?.kill()
+    const graph = this.graph as unknown as Graph
     return new Promise((done) =>
-      setTimeout(() => {
-        layout.kill()
-        this.events.placed(this.positions())
-        done()
-      }, TIDY_MS),
+      this.moveNodes(groupedStart(graph, SPIRAL_SPACING), GROUP_MS, () => {
+        const layout = new FA2Layout(this.graph, { settings: forceSettings(graph), getEdgeWeight: 'weight' })
+        this.layout = layout
+        layout.start()
+        setTimeout(() => {
+          layout.kill()
+          if (this.layout !== layout) return done() // Superseded by another tidy.
+          this.layout = undefined
+          for (const [id, position] of Object.entries(rescaled(graph, SPIRAL_SPACING))) {
+            this.graph.mergeNodeAttributes(id, position)
+          }
+          this.events.placed(this.positions())
+          this.sigma.getCamera().animatedReset({ duration: 300 })
+          done()
+        }, forceDuration(graph))
+      }),
     )
+  }
+
+  /** Animates nodes to new positions, then calls `done`. Animation needs animation frames, which
+   * a hidden window doesn't get, so the positions are applied directly if it hasn't finished in
+   * time. */
+  private moveNodes(targets: Record<string, { x: number; y: number }>, duration: number, done: () => void) {
+    let finished = false
+    const finish = () => {
+      if (finished) return
+      finished = true
+      clearTimeout(fallback)
+      done()
+    }
+    const cancel = animateNodes(this.graph, targets, { duration }, finish)
+    const fallback = setTimeout(() => {
+      cancel()
+      for (const [id, position] of Object.entries(targets)) {
+        if (this.graph.hasNode(id)) this.graph.mergeNodeAttributes(id, position)
+      }
+      finish()
+    }, duration + 500)
+  }
+
+  /** Counts settles in a burst and tidies once it has died down. */
+  private noteBurst() {
+    this.burst++
+    clearTimeout(this.burstTimer)
+    this.burstTimer = setTimeout(() => {
+      if (this.burst >= BURST_SIZE) void this.tidy()
+      this.burst = 0
+    }, BURST_QUIET_MS)
   }
 
   select(id: string | null) {
@@ -223,6 +266,8 @@ export class MapController {
   destroy() {
     this.themeQuery.removeEventListener('change', this.onThemeChange)
     this.resizeObserver.disconnect()
+    clearTimeout(this.burstTimer)
+    this.layout?.kill()
     this.sigma.kill()
   }
 

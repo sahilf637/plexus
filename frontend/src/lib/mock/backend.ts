@@ -15,6 +15,17 @@ let settings: Settings = {
 const items: ItemDetail[] = sampleItems()
 const positions = new Map<string, Position>()
 
+/** `?map=map.local.json` loads a real library's map (from `npm run export-map`) instead of the
+ * samples. Links then stay as exported; new items are linked by the word-overlap stand-in. */
+const mapUrl = new URLSearchParams(location.search).get('map')
+let exported: MapData | null = null
+async function loadExported(url: string): Promise<MapData> {
+  const data: MapData & { items: ItemDetail[] } = await (await fetch(url)).json()
+  items.splice(0, items.length, ...data.items)
+  data.positions.forEach((p) => positions.set(p.id, p))
+  return data
+}
+
 // Stand-in for linking by meaning: items sharing longer words are "related".
 const words = (item: ItemDetail) => new Set(`${item.title} ${item.body}`.toLowerCase().match(/[a-z]{5,}/g) ?? [])
 
@@ -139,7 +150,11 @@ const commands: Record<string, Command> = {
     return addItem(name, kind, `${name}-${Date.now()}`)
   },
   list_items: (): Item[] => items,
-  get_map: (): MapData => ({ items, edges: allEdges(), positions: [...positions.values()] }),
+  get_map: async (): Promise<MapData> => {
+    if (mapUrl) exported ??= await loadExported(mapUrl)
+    const edges = exported?.edges ?? allEdges()
+    return { items, edges, positions: [...positions.values()] }
+  },
   save_layout: (args) => (args.positions as Position[]).forEach((p) => positions.set(p.id, p)),
   search: (args) => {
     const words = String(args.query).toLowerCase().split(/\W+/).filter(Boolean)

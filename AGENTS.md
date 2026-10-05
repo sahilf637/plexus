@@ -130,7 +130,16 @@ npm run dev:ui       # UI only, in a browser, against the in-memory mock backend
 npm run check        # typecheck the frontend
 npm run build        # production bundle
 cd backend && cargo test && cargo clippy --all-targets
-cd backend && cargo test -- --ignored --nocapture   # tests that run the real model
+cd backend && cargo test -- --ignored --nocapture   # tests that run the real model (and the network)
+```
+
+Testing on a realistic library, without touching your own:
+
+```bash
+npm run seed -- /tmp/plexus-seed                    # ~230 notes across 15 topics, plus links
+PLEXUS_LIBRARY=/tmp/plexus-seed npm run dev         # run the app on it (env var overrides Settings)
+npm run export-map -- /tmp/plexus-seed              # its map, for `npm run dev:ui` at /?map=map.local.json
+cd backend && PLEXUS_SEED=/tmp/plexus-seed cargo test tune_links -- --ignored --nocapture   # link quality report
 ```
 
 `plexus --capture` opens the capture window (forwarded to the running instance);

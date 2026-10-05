@@ -23,6 +23,7 @@
     "@tauri-apps/api": "^2.12.1",
     "dompurify": "^3.4.16",
     "graphology": "^0.26.0",
+    "graphology-communities-louvain": "^2.0.2",
     "graphology-layout-forceatlas2": "^0.10.1",
     "graphology-types": "^0.24.8",
     "marked": "^18.0.14",

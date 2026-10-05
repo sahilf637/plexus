@@ -12,15 +12,21 @@ use rusqlite::{Connection, params};
 use crate::db::chunks;
 use crate::error::Result;
 
-/// Measured on short snippets (`cargo test similarity_report -- --ignored --nocapture`): pairs on
-/// the same topic score 0.44–0.78 (median 0.61), different topics 0.37–0.59 (median 0.46).
-/// Longer notes score higher. Tuned again against a larger sample in M0 step 8.
-pub const THRESHOLD: f32 = 0.58;
+/// Tuned on a seeded library of 218 notes across 15 topics (`pipeline::tune`): the closest
+/// matches on the same topic score 0.57–0.74 (p10–p90), on different topics 0.52–0.63, with
+/// long encyclopedic notes scoring high against nearly everything. 0.70 with up to 5 links and
+/// the best-match fallback below gives ~3 links per note, 99% of notes linked, and 95% of links
+/// within a topic (many of the rest are real: Maillard reaction ↔ coffee roasting). In the app,
+/// where later items also link back to earlier ones, the seed library ends at ~3.8 per note.
+pub const THRESHOLD: f32 = 0.70;
+/// An item with nothing above the threshold still links to its single closest match when it is
+/// at least this close, so short notes aren't left on their own.
+pub const BEST_MATCH_FLOOR: f32 = 0.60;
 /// Links an item starts with. Existing links to it from other items are kept while they still
-/// clear the threshold, so this isn't a hard cap.
-pub const MAX_LINKS: usize = 8;
-/// Bumped when how links are computed changes, so old links can be told apart.
-pub const PIPELINE_VERSION: i64 = 1;
+/// clear the floor, so this isn't a hard cap.
+pub const MAX_LINKS: usize = 5;
+/// Bumped when how links are computed changes; links from an older version are recomputed.
+pub const PIPELINE_VERSION: i64 = 2;
 const NEIGHBOURS_PER_CHUNK: usize = 40;
 
 /// Recomputes the item's `similar` links from its chunk vectors. Returns (other item, similarity).
@@ -29,18 +35,25 @@ pub fn link(conn: &mut Connection, item_id: &str, vectors: &[Vec<f32>]) -> Resul
     for vector in vectors {
         neighbours.extend(chunks::nearest(conn, vector, NEIGHBOURS_PER_CHUNK)?);
     }
+    let existing = existing_links(conn, item_id)?;
     let mut candidates: Vec<(String, f32)> = chunks::best_per_item(neighbours, item_id)
         .into_iter()
-        .filter(|(_, similarity)| *similarity >= THRESHOLD)
+        .filter(|(other, similarity)| {
+            *similarity >= BEST_MATCH_FLOOR && existing.get(other).map(String::as_str) != Some("rejected")
+        })
         .collect();
     candidates.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
-    let existing = existing_links(conn, item_id)?;
+    // The closest few above the threshold, or failing that the single closest match.
+    let mut picks = candidates.iter().take_while(|(_, s)| *s >= THRESHOLD).take(MAX_LINKS).count();
+    if picks == 0 && !candidates.is_empty() {
+        picks = 1;
+    }
+    // Links other items made to this one stay while they clear the floor.
     let keep: Vec<(String, f32)> = candidates
         .into_iter()
-        .filter(|(other, _)| existing.get(other).map(String::as_str) != Some("rejected"))
         .enumerate()
-        .filter(|(rank, (other, _))| *rank < MAX_LINKS || existing.contains_key(other))
+        .filter(|(rank, (other, _))| *rank < picks || existing.contains_key(other))
         .map(|(_, candidate)| candidate)
         .collect();
 
@@ -120,6 +133,36 @@ mod tests {
             assert!(link(conn, "rust-1", &[vectors[0].1.clone()])?.is_empty());
             let status: String = conn.query_row("SELECT status FROM edges", [], |r| r.get(0))?;
             assert_eq!(status, "rejected");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn falls_back_to_the_single_closest_match() {
+        let (_dir, db) = open_temp();
+        // Unit vectors at a chosen similarity to `[1, 0, 0]`.
+        let at = |similarity: f32, axis: usize| {
+            let mut v = vec![similarity, 0.0, 0.0, 0.0];
+            v[axis] = (1.0 - similarity * similarity).sqrt();
+            unit(&v)
+        };
+        db.with(|conn| {
+            let vectors = [("note", unit(&[1.0, 0.0, 0.0])), ("close", at(0.66, 1)), ("closer", at(0.68, 2)), ("far", at(0.5, 3))];
+            for (i, (id, v)) in vectors.iter().enumerate() {
+                upsert(conn, &sample(id, &format!("items/{id}.md"), &i.to_string()), "")?;
+                replace(conn, id, &["x".into()], std::slice::from_ref(v))?;
+            }
+            // Nothing clears the threshold, so only the closest match above the floor is linked.
+            let links = link(conn, "note", &[vectors[0].1.clone()])?;
+            assert_eq!(links.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), vec!["closer"]);
+
+            // A link another item made stays when this one is linked again.
+            link(conn, "close", &[vectors[1].1.clone()])?;
+            let links = link(conn, "note", &[vectors[0].1.clone()])?;
+            let mut ids: Vec<_> = links.iter().map(|(id, _)| id.as_str()).collect();
+            ids.sort();
+            assert_eq!(ids, vec!["close", "closer"]);
             Ok(())
         })
         .unwrap();
