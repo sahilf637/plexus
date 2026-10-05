@@ -55,7 +55,13 @@ impl Embedder {
 
     /// Unit-length vectors for passages of a note.
     pub fn embed_passages(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        self.with_model(|model| model.embed(texts, Some(BATCH)))
+        // The int8 model is dynamically quantized, so fastembed only takes a whole batch per
+        // call; long notes go in several calls to keep memory bounded.
+        let mut vectors = Vec::with_capacity(texts.len());
+        for batch in texts.chunks(BATCH) {
+            vectors.extend(self.with_model(|model| model.embed(batch, None))?);
+        }
+        Ok(vectors)
     }
 
     pub fn embed_query(&self, query: &str) -> Result<Vec<f32>> {
@@ -141,6 +147,10 @@ mod tests {
         println!("related {related:.3}, unrelated {unrelated:.3}");
         assert!(related > unrelated + 0.05);
         assert_eq!(v[0].len(), 384);
+
+        // Long notes span several batches.
+        let many: Vec<String> = (0..BATCH * 2 + 3).map(|i| format!("Passage number {i} of a long article.")).collect();
+        assert_eq!(embedder.embed_passages(&many).unwrap().len(), many.len());
     }
 }
 
