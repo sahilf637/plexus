@@ -1,5 +1,6 @@
 //! Reading the system clipboard directly, for what the webview's paste event doesn't hand over:
-//! on Linux, images (e.g. screenshots) never reach the page.
+//! on Linux, images (e.g. screenshots) never reach the page, and files copied in a file manager
+//! arrive as an empty paste.
 
 use std::path::{Path, PathBuf};
 
@@ -27,6 +28,20 @@ pub fn image_png() -> Result<Option<Vec<u8>>> {
     encoder.set_depth(png::BitDepth::Eight);
     encoder.write_header()?.write_image_data(&image.bytes)?;
     Ok(Some(png))
+}
+
+/// Files copied in a file manager (the clipboard's `text/uri-list`) that exist, or an empty list.
+pub fn copied_files() -> Result<Vec<PathBuf>> {
+    match arboard::Clipboard::new()?.get().file_list() {
+        // arboard splits the list on "\n" only; uri-lists end lines with "\r\n".
+        Ok(paths) => Ok(paths
+            .into_iter()
+            .map(|p| PathBuf::from(p.to_string_lossy().trim_end_matches('\r')))
+            .filter(|p| p.is_file())
+            .collect()),
+        Err(arboard::Error::ContentNotAvailable | arboard::Error::ConversionFailure) => Ok(Vec::new()),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// When pasted text is nothing but paths to existing files (what GNOME Files puts on the
@@ -89,6 +104,14 @@ mod tests {
         assert!(existing_files("/no/such/file.txt").is_empty());
         assert!(existing_files(&dir.to_string_lossy()).is_empty());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Put a file on the clipboard first, e.g.
+    /// `printf 'file:///tmp/x.png\r\n' | xclip -selection clipboard -t text/uri-list`.
+    #[test]
+    #[ignore = "reads the real clipboard"]
+    fn reads_copied_files() {
+        println!("{:?}", copied_files().unwrap());
     }
 
     #[test]

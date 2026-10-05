@@ -2,7 +2,7 @@
 // webview hands over text and some files, but on Linux images and files copied in a file
 // manager need the backend's help.
 
-import { clipboardImage, pastedFiles } from './api'
+import { clipboardFiles, clipboardImage, pastedFiles } from './api'
 
 export type Pasted =
   | { kind: 'text'; text: string }
@@ -46,6 +46,11 @@ export async function resolve(s: PasteSnapshot): Promise<Pasted[]> {
   }
   if (mayBeFiles(s)) {
     const paths = await pastedFiles(s.uriList || s.plain)
+    if (paths.length) return paths.map((path) => ({ kind: 'path', path }))
+  }
+  if (!s.plain.trim() && !s.uriList.trim()) {
+    // An empty paste: on Linux, what files copied in a file manager look like to the page.
+    const paths = await clipboardFiles().catch(() => [])
     if (paths.length) return paths.map((path) => ({ kind: 'path', path }))
   }
   if (mayBeImage(s)) {

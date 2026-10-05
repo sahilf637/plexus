@@ -59,6 +59,12 @@ pub fn clipboard_image() -> Result<Response> {
     Ok(Response::new(clipboard::image_png()?.unwrap_or_default()))
 }
 
+/// Files copied in a file manager, read from the clipboard (the paste event comes up empty).
+#[tauri::command]
+pub fn clipboard_files() -> Result<Vec<PathBuf>> {
+    clipboard::copied_files()
+}
+
 /// Pasted text that is only paths to existing files (copied in a file manager) → those paths.
 #[tauri::command]
 pub fn pasted_files(text: String) -> Vec<PathBuf> {

@@ -135,6 +135,7 @@ const commands: Record<string, Command> = {
   hide_capture: () => void window.close(),
   clipboard_image: () => new ArrayBuffer(0),
   pasted_files: () => [],
+  clipboard_files: () => [],
   capture_preview: (args) => preview(args.text as string),
   capture_text: (args): CaptureResult => {
     const p = preview(args.text as string)

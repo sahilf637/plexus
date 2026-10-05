@@ -81,6 +81,7 @@ pub fn run() {
             commands::hide_capture,
             commands::clipboard_image,
             commands::pasted_files,
+            commands::clipboard_files,
             commands::capture_preview,
             commands::capture_text,
             commands::capture_file,

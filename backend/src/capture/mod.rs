@@ -75,6 +75,9 @@ fn read_and_save_clipboard(state: &AppState) -> Result<Option<save::Saved>> {
         }
         return save::text(library, db, &text, false).map(Some);
     }
+    if let Some(path) = clipboard::copied_files()?.first() {
+        return save::file_from_disk(library, db, path, "", false).map(Some);
+    }
     match clipboard::image_png()? {
         Some(png) => save::file(library, db, "Pasted image.png", "image/png", &png, "", false).map(Some),
         None => Ok(None),

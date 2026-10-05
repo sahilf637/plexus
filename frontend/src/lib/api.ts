@@ -41,6 +41,9 @@ export async function clipboardImage(): Promise<Blob | null> {
 
 /** Pasted text that is only paths to existing files (copied in a file manager) → those paths. */
 export const pastedFiles = (text: string) => call<string[]>('pasted_files', { text })
+/** Files copied in a file manager, read from the clipboard by the backend: on Linux the paste
+ * event for them is empty. */
+export const clipboardFiles = () => call<string[]>('clipboard_files')
 
 export const capturePreview = (text: string) => call<Preview>('capture_preview', { text })
 export const captureText = (text: string, force = false) =>
