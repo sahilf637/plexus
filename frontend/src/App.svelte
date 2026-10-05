@@ -13,7 +13,7 @@
   } from './lib/api'
   import { resolve, snapshot } from './lib/paste'
   import { toast } from './lib/toasts.svelte'
-  import type { CaptureResult, Item, ItemLinked, MapData } from './lib/types'
+  import type { CaptureResult, Item, ItemLinked, MapData, Tier } from './lib/types'
   import EmptyState from './components/EmptyState.svelte'
   import ItemPanel from './components/ItemPanel.svelte'
   import MapView from './components/Map.svelte'
@@ -30,6 +30,28 @@
   let query = $state('')
   let matches = $state<string[] | null>(null)
   let searchInput = $state<HTMLInputElement>()
+
+  // Which links the map draws, remembered on this computer.
+  const SHOW_KEY = 'plexus.showLinks'
+  const showOptions: { tier: Tier; label: string; hint: string }[] = [
+    { tier: 'strong', label: 'Strong', hint: 'Only links Plexus is sure about' },
+    { tier: 'related', label: 'Related', hint: 'Strong and related links' },
+    { tier: 'maybe', label: 'All', hint: 'Every link, including maybes' },
+  ]
+  let lowestTier = $state<Tier>(readShow())
+  function readShow(): Tier {
+    try {
+      const saved = localStorage.getItem(SHOW_KEY)
+      if (saved === 'strong' || saved === 'related' || saved === 'maybe') return saved
+    } catch {}
+    return 'related'
+  }
+  function setShow(tier: Tier) {
+    lowestTier = tier
+    try {
+      localStorage.setItem(SHOW_KEY, tier)
+    } catch {}
+  }
 
   const itemsById = $derived(new Map((data?.items ?? []).map((item) => [item.id, item])))
 
@@ -181,6 +203,18 @@
     {/if}
     <div class="actions">
       {#if data?.edges.length}
+        <div class="show" role="radiogroup" aria-label="Links shown">
+          <span class="show-label">Links</span>
+          {#each showOptions as option}
+            <button
+              role="radio"
+              aria-checked={lowestTier === option.tier}
+              class:on={lowestTier === option.tier}
+              title={option.hint}
+              onclick={() => setShow(option.tier)}>{option.label}</button
+            >
+          {/each}
+        </div>
         <button onclick={tidy} disabled={tidying} title="Lay the map out again so related items group together">
           {tidying ? 'Tidying…' : 'Tidy layout'}
         </button>
@@ -198,6 +232,7 @@
           {data}
           {selected}
           {matches}
+          {lowestTier}
           onselect={(id) => (selected = id)}
           onplaced={(positions) => saveLayout(positions)}
         />
@@ -284,6 +319,7 @@
   }
 
   .actions button {
+    white-space: nowrap;
     display: flex;
     align-items: center;
     gap: 8px;
@@ -295,6 +331,37 @@
 
   .actions button:hover {
     border-color: var(--accent);
+  }
+
+  .show {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-2);
+  }
+
+  .show-label {
+    padding: 0 6px 0 8px;
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+
+  .actions .show button {
+    padding: 3px 9px;
+    border: none;
+    border-radius: 6px;
+    background: none;
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+
+  .actions .show button.on {
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.15);
   }
 
   main {

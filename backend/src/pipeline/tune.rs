@@ -153,8 +153,43 @@ fn tune_links() {
         table(&format!("hub-aware, density over {hub_k} neighbours"), &adjusted, &steps(-0.02, 0.01, 8));
     }
 
-    let threshold = std::env::var("TUNE_THRESHOLD").ok().and_then(|t| t.parse().ok()).unwrap_or(super::link::THRESHOLD);
-    let edges = simulate(&candidates, threshold, super::link::MAX_LINKS);
+    // Tiers: (strong, related, maybe) cutoffs, each tier capped per note like linking does.
+    println!("\ntiers (strong / related / maybe cutoffs)\n  cutoffs            | tier     links  per note  same-topic | notes with strong/related, with any");
+    use super::link::Tier;
+    for (strong, related, maybe) in [(Tier::STRONG, Tier::RELATED, Tier::MAYBE), (0.72, 0.66, 0.60), (0.74, 0.68, 0.62)] {
+        let mut tiers: [BTreeSet<(String, String)>; 3] = Default::default();
+        for (id, c) in &candidates {
+            for (t, (lo, hi, cap)) in [(strong, 2.0, 5), (related, strong, 3), (maybe, related, 3)].into_iter().enumerate() {
+                for (other, _) in c.iter().filter(|(_, s)| *s >= lo && *s < hi).take(cap) {
+                    tiers[t].insert(if id < other { (id.clone(), other.clone()) } else { (other.clone(), id.clone()) });
+                }
+            }
+        }
+        // A pair keeps its strongest tier.
+        let strong_set = tiers[0].clone();
+        tiers[1].retain(|p| !strong_set.contains(p));
+        let upper: BTreeSet<_> = tiers[0].union(&tiers[1]).cloned().collect();
+        tiers[2].retain(|p| !upper.contains(p));
+        let linked = |sets: &[&BTreeSet<(String, String)>]| {
+            sets.iter().flat_map(|s| s.iter().flat_map(|(a, b)| [a, b])).collect::<BTreeSet<_>>().len()
+        };
+        for (t, name) in ["strong", "related", "maybe"].iter().enumerate() {
+            let correct = tiers[t].iter().filter(|(a, b)| same(a, b)).count();
+            let coverage = if t == 2 {
+                format!("{:>3.0}% / {:>3.0}%", 100.0 * linked(&[&tiers[0], &tiers[1]]) as f32 / n as f32,
+                    100.0 * linked(&[&tiers[0], &tiers[1], &tiers[2]]) as f32 / n as f32)
+            } else { String::new() };
+            println!(
+                "  {strong:.2}/{related:.2}/{maybe:.2}   | {name:<7} {:>5}  {:>8.1}  {:>8.1}% | {coverage}",
+                tiers[t].len(),
+                2.0 * tiers[t].len() as f32 / n as f32,
+                100.0 * correct as f32 / tiers[t].len().max(1) as f32,
+            );
+        }
+    }
+
+    let threshold = std::env::var("TUNE_THRESHOLD").ok().and_then(|t| t.parse().ok()).unwrap_or(super::link::Tier::RELATED);
+    let edges = simulate(&candidates, threshold, 5);
     println!("\nlinks across topics at {threshold:.2} (strongest first):");
     let mut cross: Vec<_> = edges
         .iter()

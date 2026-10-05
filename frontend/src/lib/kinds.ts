@@ -1,4 +1,4 @@
-import type { Kind } from './types'
+import type { Kind, Tier } from './types'
 
 /** How each kind is named in the UI. */
 export const kindLabel: Record<Kind, string> = {
@@ -7,6 +7,20 @@ export const kindLabel: Record<Kind, string> = {
   url: 'Link',
   image: 'Image',
   file: 'File',
+}
+
+/** Tiers from most to least sure. */
+export const tiers: Tier[] = ['strong', 'related', 'maybe']
+
+export const tierLabel: Record<Tier, string> = {
+  strong: 'Strongly related',
+  related: 'Related',
+  maybe: 'Maybe related',
+}
+
+/** Whether a link of tier `tier` shows when the map shows links down to `lowest`. */
+export function tierShown(tier: Tier, lowest: Tier): boolean {
+  return tiers.indexOf(tier) <= tiers.indexOf(lowest)
 }
 
 export function formatBytes(bytes: number): string {

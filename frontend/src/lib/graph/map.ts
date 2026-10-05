@@ -8,9 +8,16 @@ import FA2Layout from 'graphology-layout-forceatlas2/worker'
 import { animateNodes } from 'sigma/utils'
 import type { EdgeDisplayData, NodeDisplayData, PartialButFor } from 'sigma/types'
 import type { Settings } from 'sigma/settings'
-import { linkStrength } from '../kinds'
+import { tierShown } from '../kinds'
 import { forceDuration, forceSettings, groupedStart, rescaled, sunflower } from './layout'
-import type { Edge, Item, MapData, Position } from '../types'
+import type { Edge, Item, MapData, Position, Tier } from '../types'
+
+/** How each tier of link is drawn, and how hard it pulls its items together in the layout. */
+const TIER_STYLE: Record<Tier, { size: number; weight: number }> = {
+  strong: { size: 2.4, weight: 1 },
+  related: { size: 1.2, weight: 0.5 },
+  maybe: { size: 0.7, weight: 0.12 },
+}
 
 export interface MapEvents {
   select: (id: string | null) => void
@@ -53,6 +60,8 @@ function themeColors() {
     file: cssVar('--kind-file'),
     dim: cssVar('--map-dim'),
     edge: cssVar('--map-edge'),
+    edgeStrong: cssVar('--map-edge-strong'),
+    edgeMaybe: cssVar('--map-edge-maybe'),
     label: cssVar('--text'),
     surface: cssVar('--surface'),
     border: cssVar('--border'),
@@ -72,6 +81,8 @@ export class MapController {
   private sigma: Sigma
   private colors = themeColors()
   private hovered: string | null = null
+  /** The least sure tier of link drawn (hovering an item shows all of its links). */
+  private lowestTier: Tier = 'related'
   private burst = 0
   private layout: FA2Layout | undefined
   private burstTimer: ReturnType<typeof setTimeout> | undefined
@@ -160,10 +171,25 @@ export class MapController {
     for (const edge of edges) {
       if (!this.graph.hasNode(edge.src) || !this.graph.hasNode(edge.dst)) continue
       if (this.graph.hasEdge(edge.src, edge.dst)) continue
-      const strength = linkStrength(edge.weight)
-      this.graph.addEdge(edge.src, edge.dst, { size: 0.6 + 2.4 * strength, weight: strength, color: this.colors.edge })
+      const { size, weight } = TIER_STYLE[edge.tier]
+      this.graph.addEdge(edge.src, edge.dst, { size, weight, tier: edge.tier, color: this.edgeColor(edge.tier) })
     }
-    this.graph.forEachNode((node) => this.graph.setNodeAttribute(node, 'size', nodeSize(this.graph.degree(node))))
+    // Items with many sure links are drawn bigger; maybes don't count.
+    this.graph.forEachNode((node) => {
+      let links = 0
+      this.graph.forEachEdge(node, (_, attrs) => (links += attrs.tier === 'maybe' ? 0 : 1))
+      this.graph.setNodeAttribute(node, 'size', nodeSize(links))
+    })
+  }
+
+  /** Shows links down to `tier`: strong only, strong and related, or everything. */
+  setLowestTier(tier: Tier) {
+    this.lowestTier = tier
+    this.sigma.refresh({ skipIndexation: true })
+  }
+
+  private edgeColor(tier: Tier): string {
+    return tier === 'strong' ? this.colors.edgeStrong : tier === 'maybe' ? this.colors.edgeMaybe : this.colors.edge
   }
 
   /** Moves a newly linked item next to the items it's linked to (closer to stronger links). */
@@ -334,6 +360,8 @@ export class MapController {
     const [a, b] = this.graph.extremities(edge)
     if (this.hovered && a !== this.hovered && b !== this.hovered) return { ...data, hidden: true }
     if (this.matches && !(this.matches.has(a) && this.matches.has(b))) return { ...data, hidden: true }
+    const tier = this.graph.getEdgeAttribute(edge, 'tier') as Tier
+    if (!this.hovered && !tierShown(tier, this.lowestTier)) return { ...data, hidden: true }
     return data
   }
 
@@ -370,7 +398,7 @@ export class MapController {
     this.colors = themeColors()
     this.sigma.setSetting('labelColor', { color: this.colors.label })
     this.graph.forEachNode((node, attrs) => this.graph.setNodeAttribute(node, 'color', this.colors[attrs.kind]))
-    this.graph.forEachEdge((edge) => this.graph.setEdgeAttribute(edge, 'color', this.colors.edge))
+    this.graph.forEachEdge((edge, attrs) => this.graph.setEdgeAttribute(edge, 'color', this.edgeColor(attrs.tier as Tier)))
   }
 }
 

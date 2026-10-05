@@ -49,6 +49,7 @@ struct Related {
     id: String,
     title: String,
     weight: f32,
+    tier: link::Tier,
 }
 
 impl Pipeline {
@@ -134,9 +135,11 @@ fn process(app: &AppHandle, state: &AppState, id: &str) -> Result<()> {
         (Status::Unlinkable, Vec::new())
     } else {
         let vectors = state.pipeline.embedder.embed_passages(&texts)?;
+        let name_only = name_only(&item, &body);
         let links = state.db.with(|conn| {
             chunks::replace(conn, id, &texts, &vectors)?;
-            link::link(conn, id, &vectors)
+            items::set_name_only(conn, id, name_only)?;
+            link::link(conn, id, &vectors, name_only)
         })?;
         (Status::Linked, links)
     };
@@ -145,9 +148,9 @@ fn process(app: &AppHandle, state: &AppState, id: &str) -> Result<()> {
         items::set_status(conn, id, status, link::PIPELINE_VERSION)?;
         let related = links
             .iter()
-            .filter_map(|(other, weight)| {
+            .filter_map(|(other, weight, tier)| {
                 let title = items::get(conn, other).ok().flatten()?.title;
-                Some(Related { id: other.clone(), title, weight: *weight })
+                Some(Related { id: other.clone(), title, weight: *weight, tier: *tier })
             })
             .collect();
         Ok(ItemLinked { id: id.to_string(), status, edges: graph::edges_of(conn, id)?, related })
@@ -157,15 +160,27 @@ fn process(app: &AppHandle, state: &AppState, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// The text that stands for an item when finding related ones.
-fn embedding_text(item: &Item, body: &str) -> String {
-    // Embedded images and links to the item's own files say nothing about it; web links stay.
+/// The body without embedded images and links to the item's own files, which say nothing
+/// about it; web links stay.
+fn own_text(body: &str) -> String {
     static LOCAL_EMBED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"!?\[[^\]]*\]\(([^)]*)\)").unwrap());
     let body = LOCAL_EMBED.replace_all(body, |c: &regex::Captures| {
         let target = &c[1];
         if target.contains("://") { c[0].to_string() } else { String::new() }
     });
-    let body = body.trim();
+    body.trim().to_string()
+}
+
+/// An image or file with no text of its own yet: it can only be linked by its name, so its
+/// links are never more than `maybe`.
+fn name_only(item: &Item, body: &str) -> bool {
+    matches!(item.kind, Kind::Image | Kind::File) && own_text(body).is_empty()
+}
+
+/// The text that stands for an item when finding related ones.
+fn embedding_text(item: &Item, body: &str) -> String {
+    let body = own_text(body);
+    let body = body.as_str();
     match item.kind {
         // Until text is extracted from them (M1), images and files have the user's note, or
         // else only their names.
@@ -196,8 +211,10 @@ mod tests {
         item.kind = Kind::Image;
         item.title = "Whiteboard sketch".into();
         assert_eq!(embedding_text(&item, "![Whiteboard sketch](w.png)\n"), "Whiteboard sketch");
+        assert!(name_only(&item, "![Whiteboard sketch](w.png)\n"));
         item.title = "Pasted image".into();
         assert_eq!(embedding_text(&item, "![Pasted image](p.png)\n"), "");
+        assert!(!name_only(&item, "![Pasted image](p.png)\n\nOur sprint board\n"));
         assert_eq!(embedding_text(&item, "![Pasted image](p.png)\n\nOur sprint board\n"), "Our sprint board");
         let several = "![Board](b.png)\n![Shot 2.png](b_2.png)\n[Q3.pdf](b_3.pdf)\n\nSee [the doc](https://x.io/d)\n";
         assert_eq!(embedding_text(&item, several), "See [the doc](https://x.io/d)");
@@ -233,7 +250,7 @@ mod tests {
             let links = db
                 .with(|conn| {
                     chunks::replace(conn, &item.id, &texts, &vectors)?;
-                    link::link(conn, &item.id, &vectors)
+                    link::link(conn, &item.id, &vectors, false)
                 })
                 .unwrap();
             println!("{:<60} → {} link(s) in {:?}", &note[..40], links.len(), started.elapsed());

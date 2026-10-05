@@ -141,6 +141,12 @@ Three layers: **Items ↔ Concepts ↔ Topics.**
 - **Topics:** hierarchical clusters (Leiden/Louvain on the similarity graph), named by the LLM.
   Cluster ids stay stable across re-clustering by matching on member overlap.
 
+**Tiers:** every link found by meaning has a tier saying how sure it is: `strong` (≥ 0.72
+similarity, up to 5 per item), `related` (≥ 0.67, up to 3) and `maybe` (≥ 0.62, up to 3). An item
+can have many links in each. The map draws strong and related links by default ("Links: Strong ·
+Related · All" in the header); hovering an item shows all of its links. Strong links pull hardest
+in the layout, maybes barely. Files known only by their name never get more than `maybe`.
+
 **Edges** carry: type (`similar`, `supports`, `contradicts`, `example_of`, `extends`, `same_source`,
 `user`), weight, a one-line reason, confidence, provenance (`embedding | llm | user`) and status
 (`proposed | accepted | rejected`). Users can accept or reject any edge.
@@ -215,7 +221,7 @@ map**: items light up as it reads them.
 | | Scope |
 |---|---|
 | **M0** | Scaffold; hotkey + capture window; note files + index; text/code/URL captured fully, images/files stored raw; secret detection; duplicates; local embeddings; similarity edges; Sigma map. Fully offline. See [plans/M0.md](plans/M0.md). |
-| **M1** | Extractors: rich HTML → markdown, images (OCR), PDF/DOCX/EPUB text; clipboard watching (opt-in). |
+| **M1** | Extractors: plain-text files (`.md`, `.txt`, code files) read as text, rich HTML → markdown, images (OCR), PDF/DOCX/EPUB text; clipboard watching (opt-in). Until then files link by name only, capped at `maybe`. |
 | **M2** | LLM enrichment: titles, summaries, concepts, typed edges with reasons; accept/reject. |
 | **M3** | Topics: hierarchical clustering, names, semantic zoom, stable layout. |
 | **M4** | Ask agent with graph tools, citations and live path on the map. |

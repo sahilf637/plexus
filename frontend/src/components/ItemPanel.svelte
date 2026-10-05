@@ -2,7 +2,7 @@
   import DOMPurify from 'dompurify'
   import { marked } from 'marked'
   import { fileUrl, getItem, openItemFile, openSource } from '../lib/api'
-  import { formatBytes, kindLabel, linkStrength } from '../lib/kinds'
+  import { formatBytes, kindLabel, linkStrength, tierLabel, tiers } from '../lib/kinds'
   import type { Edge, Item, ItemDetail } from '../lib/types'
 
   let {
@@ -51,6 +51,10 @@
       .map((e) => ({ edge: e, item: items.get(e.src === id ? e.dst : e.src) }))
       .filter((r): r is { edge: Edge; item: Item } => r.item !== undefined)
       .sort((a, b) => b.edge.weight - a.edge.weight),
+  )
+  /** Related items grouped by how sure the link is, strongest first. */
+  const groups = $derived(
+    tiers.map((tier) => ({ tier, rows: related.filter((r) => r.edge.tier === tier) })).filter((g) => g.rows.length),
   )
 
   const html = $derived(
@@ -125,27 +129,38 @@
       {/if}
     </div>
 
+    {#snippet rows(list: typeof related)}
+      <ul>
+        {#each list as { edge, item } (item.id)}
+          <li>
+            <button onclick={() => onselect(item.id)}>
+              <span class="dot" style:background={`var(--kind-${item.kind})`}></span>
+              <span class="title">{item.title}</span>
+              <span class="strength" title="How closely related">
+                <span style:width={`${linkStrength(edge.weight) * 100}%`}></span>
+              </span>
+            </button>
+          </li>
+        {/each}
+      </ul>
+    {/snippet}
+
     <section>
-      <h3>Related</h3>
-      {#if related.length}
-        <ul>
-          {#each related as { edge, item } (item.id)}
-            <li>
-              <button onclick={() => onselect(item.id)}>
-                <span class="dot" style:background={`var(--kind-${item.kind})`}></span>
-                <span class="title">{item.title}</span>
-                <span class="strength" title="How closely related">
-                  <span style:width={`${linkStrength(edge.weight) * 100}%`}></span>
-                </span>
-              </button>
-            </li>
-          {/each}
-        </ul>
-      {:else if items.get(id)?.status === 'pending'}
-        <p class="muted">Finding related items…</p>
+      {#each groups as group (group.tier)}
+        {#if group.tier === 'maybe'}
+          <!-- Less sure: folded away unless it's all there is. -->
+          <details open={groups.length === 1}>
+            <summary><h3>{tierLabel.maybe} <span class="count">{group.rows.length}</span></h3></summary>
+            {@render rows(group.rows)}
+          </details>
+        {:else}
+          <h3>{tierLabel[group.tier]} <span class="count">{group.rows.length}</span></h3>
+          {@render rows(group.rows)}
+        {/if}
       {:else}
-        <p class="muted">Nothing related yet.</p>
-      {/if}
+        <h3>Related</h3>
+        <p class="muted">{items.get(id)?.status === 'pending' ? 'Finding related items…' : 'Nothing related yet.'}</p>
+      {/each}
     </section>
   {/if}
 </aside>
@@ -291,6 +306,26 @@
   h3 {
     margin: 0 0 6px;
     font-size: 13px;
+  }
+
+  ul + h3,
+  ul + details,
+  section > details + h3 {
+    margin-top: 12px;
+  }
+
+  .count {
+    color: var(--text-muted);
+    font-weight: 400;
+  }
+
+  summary {
+    cursor: pointer;
+    color: var(--text-muted);
+  }
+
+  summary h3 {
+    display: inline;
   }
 
   ul {

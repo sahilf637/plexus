@@ -1,6 +1,6 @@
 //! Items in the index: one row per note file.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
@@ -187,6 +187,18 @@ pub fn find_duplicate(conn: &Connection, body_hash: &str, asset_hash: Option<&st
 pub fn find_link(conn: &Connection, url: &str) -> Result<Option<Item>> {
     let sql = format!("SELECT {COLUMNS} FROM items WHERE kind = 'url' AND source_url = ?1 LIMIT 1");
     Ok(conn.query_row(&sql, [url], from_row).optional()?)
+}
+
+/// Marks whether the item could only be linked by its name, which caps its links at `maybe`.
+pub fn set_name_only(conn: &Connection, id: &str, name_only: bool) -> Result<()> {
+    conn.execute("UPDATE items SET name_only = ?2 WHERE id = ?1", params![id, name_only])?;
+    Ok(())
+}
+
+pub fn name_only_ids(conn: &Connection) -> Result<HashSet<String>> {
+    let mut stmt = conn.prepare("SELECT id FROM items WHERE name_only = 1")?;
+    let ids = stmt.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
+    Ok(ids)
 }
 
 /// Links whose web page hasn't been read yet.

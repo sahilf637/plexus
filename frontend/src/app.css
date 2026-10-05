@@ -20,7 +20,9 @@
   --kind-image: #b8326f;
   --kind-file: #5d6b7e;
   --map-dim: #d9d9df;
+  --map-edge-strong: rgba(91, 91, 214, 0.55);
   --map-edge: rgba(91, 91, 214, 0.28);
+  --map-edge-maybe: rgba(91, 91, 214, 0.13);
 
   --radius: 10px;
   --shadow: 0 8px 30px rgb(0 0 0 / 0.12);
@@ -48,7 +50,9 @@
     --kind-image: #f06ba8;
     --kind-file: #9aa8bb;
     --map-dim: #34343c;
+    --map-edge-strong: rgba(139, 139, 240, 0.6);
     --map-edge: rgba(139, 139, 240, 0.3);
+    --map-edge-maybe: rgba(139, 139, 240, 0.13);
   }
 }
 

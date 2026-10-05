@@ -87,6 +87,11 @@ const MIGRATIONS: &[&str] = &[r#"
     -- web page read.
     ALTER TABLE items ADD COLUMN extracted TEXT;
     CREATE INDEX items_source_url ON items(source_url);
+"#, r#"
+    -- How sure a link is: strong | related | maybe.
+    ALTER TABLE edges ADD COLUMN tier TEXT NOT NULL DEFAULT 'related';
+    -- Set when an item could only be linked by its name (a file with no text yet).
+    ALTER TABLE items ADD COLUMN name_only INTEGER NOT NULL DEFAULT 0;
 "#];
 
 pub struct Db {

@@ -70,12 +70,16 @@ export interface ItemDetail extends Item {
   attachments: { name: string; file: string; kind: Kind; size: number | null }[]
 }
 
+/** How sure a link is. */
+export type Tier = 'strong' | 'related' | 'maybe'
+
 export interface Edge {
   src: string
   dst: string
   /** "similar" for links found by meaning; typed links come with AI enrichment. */
   kind: string
   weight: number
+  tier: Tier
   reason: string | null
 }
 
@@ -98,5 +102,5 @@ export interface ItemLinked {
   /** Every link touching this item, now. */
   edges: Edge[]
   /** Linked items, closest first. */
-  related: { id: string; title: string; weight: number }[]
+  related: { id: string; title: string; weight: number; tier: Tier }[]
 }

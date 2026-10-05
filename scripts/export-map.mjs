@@ -31,8 +31,8 @@ const items = db
      FROM items ORDER BY captured_at`,
   )
   .all()
-  .map((item) => ({ ...item, body: body(item.path), assetFile: null }))
-const edges = db.prepare("SELECT src, dst, kind, weight, reason FROM edges WHERE status != 'rejected'").all()
+  .map((item) => ({ ...item, body: body(item.path), assetFile: null, attachments: [] }))
+const edges = db.prepare("SELECT src, dst, kind, weight, tier, reason FROM edges WHERE status != 'rejected'").all()
 const positions = db.prepare('SELECT item_id AS id, x, y FROM layout').all()
 
 const out = resolve(import.meta.dirname, '..', 'frontend', 'public', 'map.local.json')

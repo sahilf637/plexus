@@ -1,7 +1,7 @@
 // In-memory stand-in for the Rust backend, used by `npm run dev:ui`. Detection here is a rough
 // approximation, good enough to exercise the UI; the real rules live in Rust.
 
-import type { CaptureResult, Edge, HotkeyStatus, Item, ItemDetail, ItemLinked, Kind, MapData, Position, Preview, Settings } from '../types'
+import type { CaptureResult, Edge, HotkeyStatus, Item, ItemDetail, ItemLinked, Kind, MapData, Position, Preview, Settings, Tier } from '../types'
 import { sampleItems } from './samples'
 
 let settings: Settings = {
@@ -35,7 +35,9 @@ function linksFor(item: ItemDetail): Edge[] {
     .filter((other) => other.id !== item.id)
     .map((other) => {
       const shared = [...words(other)].filter((w) => mine.has(w)).length
-      return { src: item.id, dst: other.id, kind: 'similar', weight: Math.min(0.85, 0.55 + 0.08 * shared), reason: null, shared }
+      const weight = Math.min(0.85, 0.55 + 0.08 * shared)
+      const tier: Tier = weight >= 0.72 ? 'strong' : weight >= 0.67 ? 'related' : 'maybe'
+      return { src: item.id, dst: other.id, kind: 'similar', weight, tier, reason: null, shared }
     })
     .filter((e) => e.shared > 0)
     .map(({ shared: _, ...edge }) => edge)
@@ -86,7 +88,7 @@ function addItem(title: string, kind: Kind, body: string): CaptureResult {
   setTimeout(() => {
     item.status = 'linked'
     const edges = linksFor(item)
-    const related = edges.map((e) => ({ id: e.dst, title: items.find((i) => i.id === e.dst)!.title, weight: e.weight }))
+    const related = edges.map((e) => ({ id: e.dst, title: items.find((i) => i.id === e.dst)!.title, weight: e.weight, tier: e.tier }))
     emit('item-linked', { id: item.id, status: 'linked', edges, related } satisfies ItemLinked)
   }, readDelay + 500)
   return { status: 'saved', id: item.id, title, kind }

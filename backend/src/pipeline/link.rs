@@ -2,59 +2,105 @@
 //!
 //! Like Atomic's `compute_semantic_edges_for_atom`: every chunk of the item looks up its nearest
 //! chunks elsewhere, each other item counts with its best-matching chunk, and the closest few
-//! above a threshold become `similar` links.
+//! become `similar` links, each with a tier (strong, related, maybe) saying how sure it is.
 
 use std::collections::HashMap;
 
 use chrono::{SecondsFormat, Utc};
 use rusqlite::{Connection, params};
 
-use crate::db::chunks;
+use serde::Serialize;
+
+use crate::db::{chunks, items};
 use crate::error::Result;
 
-/// Tuned on a seeded library of 218 notes across 15 topics (`pipeline::tune`): the closest
-/// matches on the same topic score 0.57–0.74 (p10–p90), on different topics 0.52–0.63, with
-/// long encyclopedic notes scoring high against nearly everything. 0.70 with up to 5 links and
-/// the best-match fallback below gives ~3 links per note, 99% of notes linked, and 95% of links
-/// within a topic (many of the rest are real: Maillard reaction ↔ coffee roasting). In the app,
-/// where later items also link back to earlier ones, the seed library ends at ~3.8 per note.
-pub const THRESHOLD: f32 = 0.70;
-/// An item with nothing above the threshold still links to its single closest match when it is
-/// at least this close, so short notes aren't left on their own.
-pub const BEST_MATCH_FLOOR: f32 = 0.60;
-/// Links an item starts with. Existing links to it from other items are kept while they still
-/// clear the floor, so this isn't a hard cap.
-pub const MAX_LINKS: usize = 5;
+/// How sure a link is, from how similar the two items are. Tuned on a seeded library of 218
+/// notes across 15 topics (`pipeline::tune`): strong links are 99% within a topic (~2 per note),
+/// related ones 84% (~3; many of the rest are real, like Maillard reaction ↔ coffee roasting),
+/// maybe ones 67%. Long encyclopedic notes score high against nearly everything, hence the high
+/// cutoffs; short notes mostly land in the lower tiers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Tier {
+    Maybe,
+    Related,
+    Strong,
+}
+
+impl Tier {
+    pub const STRONG: f32 = 0.72;
+    pub const RELATED: f32 = 0.67;
+    pub const MAYBE: f32 = 0.62;
+
+    pub fn of(similarity: f32) -> Option<Tier> {
+        match similarity {
+            s if s >= Self::STRONG => Some(Tier::Strong),
+            s if s >= Self::RELATED => Some(Tier::Related),
+            s if s >= Self::MAYBE => Some(Tier::Maybe),
+            _ => None,
+        }
+    }
+
+    /// Links an item starts with in this tier. Links other items made to it are kept while they
+    /// still clear a tier, so these aren't hard caps.
+    fn cap(self) -> usize {
+        match self {
+            Tier::Strong => 5,
+            Tier::Related | Tier::Maybe => 3,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Tier::Strong => "strong",
+            Tier::Related => "related",
+            Tier::Maybe => "maybe",
+        }
+    }
+
+    pub fn parse(text: &str) -> Tier {
+        match text {
+            "strong" => Tier::Strong,
+            "maybe" => Tier::Maybe,
+            _ => Tier::Related,
+        }
+    }
+}
+
 /// Bumped when how links are computed changes; links from an older version are recomputed.
-pub const PIPELINE_VERSION: i64 = 2;
+pub const PIPELINE_VERSION: i64 = 3;
 const NEIGHBOURS_PER_CHUNK: usize = 40;
 
-/// Recomputes the item's `similar` links from its chunk vectors. Returns (other item, similarity).
-pub fn link(conn: &mut Connection, item_id: &str, vectors: &[Vec<f32>]) -> Result<Vec<(String, f32)>> {
+/// Recomputes the item's `similar` links from its chunk vectors. `name_only` items (a file known
+/// only by its name) and links to them are never more than `maybe`. Returns (other item,
+/// similarity, tier), closest first.
+pub fn link(conn: &mut Connection, item_id: &str, vectors: &[Vec<f32>], name_only: bool) -> Result<Vec<(String, f32, Tier)>> {
     let mut neighbours = Vec::new();
     for vector in vectors {
         neighbours.extend(chunks::nearest(conn, vector, NEIGHBOURS_PER_CHUNK)?);
     }
     let existing = existing_links(conn, item_id)?;
-    let mut candidates: Vec<(String, f32)> = chunks::best_per_item(neighbours, item_id)
+    let named_only = items::name_only_ids(conn)?;
+    let mut candidates: Vec<(String, f32, Tier)> = chunks::best_per_item(neighbours, item_id)
         .into_iter()
-        .filter(|(other, similarity)| {
-            *similarity >= BEST_MATCH_FLOOR && existing.get(other).map(String::as_str) != Some("rejected")
+        .filter(|(other, _)| existing.get(other).map(String::as_str) != Some("rejected"))
+        .filter_map(|(other, similarity)| {
+            let tier = Tier::of(similarity)?;
+            let tier = if name_only || named_only.contains(&other) { tier.min(Tier::Maybe) } else { tier };
+            Some((other, similarity, tier))
         })
         .collect();
     candidates.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
-    // The closest few above the threshold, or failing that the single closest match.
-    let mut picks = candidates.iter().take_while(|(_, s)| *s >= THRESHOLD).take(MAX_LINKS).count();
-    if picks == 0 && !candidates.is_empty() {
-        picks = 1;
-    }
-    // Links other items made to this one stay while they clear the floor.
-    let keep: Vec<(String, f32)> = candidates
+    // The closest few in each tier, plus links other items made to this one.
+    let mut taken: HashMap<Tier, usize> = HashMap::new();
+    let keep: Vec<(String, f32, Tier)> = candidates
         .into_iter()
-        .enumerate()
-        .filter(|(rank, (other, _))| *rank < picks || existing.contains_key(other))
-        .map(|(_, candidate)| candidate)
+        .filter(|(other, _, tier)| {
+            let count = taken.entry(*tier).or_default();
+            *count += 1;
+            *count <= tier.cap() || existing.contains_key(other)
+        })
         .collect();
 
     let tx = conn.transaction()?;
@@ -65,13 +111,13 @@ pub fn link(conn: &mut Connection, item_id: &str, vectors: &[Vec<f32>]) -> Resul
         [item_id],
     )?;
     let now = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
-    for (other, similarity) in &keep {
+    for (other, similarity, tier) in &keep {
         let (src, dst) = if item_id < other.as_str() { (item_id, other.as_str()) } else { (other.as_str(), item_id) };
         tx.execute(
-            "INSERT INTO edges (src, dst, kind, weight, provenance, status, pipeline_version, created_at)
-             VALUES (?1, ?2, 'similar', ?3, 'embedding', 'proposed', ?4, ?5)
-             ON CONFLICT(src, dst, kind) DO UPDATE SET weight = excluded.weight",
-            params![src, dst, *similarity as f64, PIPELINE_VERSION, now],
+            "INSERT INTO edges (src, dst, kind, weight, tier, provenance, status, pipeline_version, created_at)
+             VALUES (?1, ?2, 'similar', ?3, ?4, 'embedding', 'proposed', ?5, ?6)
+             ON CONFLICT(src, dst, kind) DO UPDATE SET weight = excluded.weight, tier = excluded.tier",
+            params![src, dst, *similarity as f64, tier.as_str(), PIPELINE_VERSION, now],
         )?;
     }
     tx.commit()?;
@@ -105,6 +151,44 @@ mod tests {
     use crate::db::items::{sample, upsert};
     use crate::db::open_temp;
 
+    /// A unit vector at the given similarity to `[1, 0, …]`, leaning along `axis`.
+    fn at(similarity: f32, axis: usize) -> Vec<f32> {
+        let mut v = vec![similarity, 0.0, 0.0, 0.0, 0.0];
+        v[axis] = (1.0 - similarity * similarity).sqrt();
+        unit(&v)
+    }
+
+    fn setup(conn: &mut Connection, vectors: &[(&str, Vec<f32>)]) -> Result<()> {
+        for (i, (id, v)) in vectors.iter().enumerate() {
+            upsert(conn, &sample(id, &format!("items/{id}.md"), &i.to_string()), "")?;
+            replace(conn, id, &["x".into()], std::slice::from_ref(v))?;
+        }
+        Ok(())
+    }
+
+    fn tiers(links: &[(String, f32, Tier)]) -> Vec<(&str, Tier)> {
+        links.iter().map(|(id, _, tier)| (id.as_str(), *tier)).collect()
+    }
+
+    #[test]
+    fn links_fall_into_tiers_by_similarity() {
+        let (_dir, db) = open_temp();
+        db.with(|conn| {
+            let note = unit(&[1.0, 0.0, 0.0, 0.0, 0.0]);
+            setup(conn, &[("note", note.clone()), ("strong", at(0.8, 1)), ("related", at(0.69, 2)), ("maybe", at(0.64, 3)), ("far", at(0.5, 4))])?;
+            let links = link(conn, "note", std::slice::from_ref(&note), false)?;
+            assert_eq!(tiers(&links), vec![("strong", Tier::Strong), ("related", Tier::Related), ("maybe", Tier::Maybe)]);
+            let stored: String = conn.query_row("SELECT tier FROM edges WHERE src = 'note' AND dst = 'related'", [], |r| r.get(0))?;
+            assert_eq!(stored, "related");
+
+            // Known only by its name: nothing better than maybe, either way round.
+            let links = link(conn, "note", &[note], true)?;
+            assert!(links.iter().all(|(_, _, tier)| *tier == Tier::Maybe));
+            Ok(())
+        })
+        .unwrap();
+    }
+
     #[test]
     fn links_similar_items_and_respects_rejections() {
         let (_dir, db) = open_temp();
@@ -114,55 +198,22 @@ mod tests {
                 ("rust-2", unit(&[0.95, 0.2, 0.0])),
                 ("bread", unit(&[0.0, 0.1, 1.0])),
             ];
-            for (i, (id, v)) in vectors.iter().enumerate() {
-                upsert(conn, &sample(id, &format!("items/{id}.md"), &i.to_string()), "")?;
-                replace(conn, id, &["x".into()], std::slice::from_ref(v))?;
-            }
+            setup(conn, &vectors)?;
 
-            let links = link(conn, "rust-1", &[vectors[0].1.clone()])?;
-            assert_eq!(links.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), vec!["rust-2"]);
+            let links = link(conn, "rust-1", &[vectors[0].1.clone()], false)?;
+            assert_eq!(tiers(&links), vec![("rust-2", Tier::Strong)]);
             assert_eq!(unlinked(conn)?, HashSet::from(["bread".to_string()]));
 
             // Linking the other side finds the same pair, stored once.
-            link(conn, "rust-2", &[vectors[1].1.clone()])?;
+            link(conn, "rust-2", &[vectors[1].1.clone()], false)?;
             let count: i64 = conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0))?;
             assert_eq!(count, 1);
 
             // A rejected link is never re-created.
             conn.execute("UPDATE edges SET status = 'rejected'", [])?;
-            assert!(link(conn, "rust-1", &[vectors[0].1.clone()])?.is_empty());
+            assert!(link(conn, "rust-1", &[vectors[0].1.clone()], false)?.is_empty());
             let status: String = conn.query_row("SELECT status FROM edges", [], |r| r.get(0))?;
             assert_eq!(status, "rejected");
-            Ok(())
-        })
-        .unwrap();
-    }
-
-    #[test]
-    fn falls_back_to_the_single_closest_match() {
-        let (_dir, db) = open_temp();
-        // Unit vectors at a chosen similarity to `[1, 0, 0]`.
-        let at = |similarity: f32, axis: usize| {
-            let mut v = vec![similarity, 0.0, 0.0, 0.0];
-            v[axis] = (1.0 - similarity * similarity).sqrt();
-            unit(&v)
-        };
-        db.with(|conn| {
-            let vectors = [("note", unit(&[1.0, 0.0, 0.0])), ("close", at(0.66, 1)), ("closer", at(0.68, 2)), ("far", at(0.5, 3))];
-            for (i, (id, v)) in vectors.iter().enumerate() {
-                upsert(conn, &sample(id, &format!("items/{id}.md"), &i.to_string()), "")?;
-                replace(conn, id, &["x".into()], std::slice::from_ref(v))?;
-            }
-            // Nothing clears the threshold, so only the closest match above the floor is linked.
-            let links = link(conn, "note", &[vectors[0].1.clone()])?;
-            assert_eq!(links.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), vec!["closer"]);
-
-            // A link another item made stays when this one is linked again.
-            link(conn, "close", &[vectors[1].1.clone()])?;
-            let links = link(conn, "note", &[vectors[0].1.clone()])?;
-            let mut ids: Vec<_> = links.iter().map(|(id, _)| id.as_str()).collect();
-            ids.sort();
-            assert_eq!(ids, vec!["close", "closer"]);
             Ok(())
         })
         .unwrap();

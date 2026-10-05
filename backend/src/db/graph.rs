@@ -4,6 +4,7 @@ use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
+use crate::pipeline::link::Tier;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -12,6 +13,8 @@ pub struct Edge {
     pub dst: String,
     pub kind: String,
     pub weight: f64,
+    /// How sure the link is: strong, related or maybe.
+    pub tier: Tier,
     pub reason: Option<String>,
 }
 
@@ -22,13 +25,25 @@ pub struct Position {
     pub y: f64,
 }
 
+fn edge_from_row(row: &rusqlite::Row) -> rusqlite::Result<Edge> {
+    let tier: String = row.get(5)?;
+    Ok(Edge {
+        src: row.get(0)?,
+        dst: row.get(1)?,
+        kind: row.get(2)?,
+        weight: row.get(3)?,
+        reason: row.get(4)?,
+        tier: Tier::parse(&tier),
+    })
+}
+
 /// Every edge the user hasn't rejected.
 pub fn edges(conn: &Connection) -> Result<Vec<Edge>> {
     let mut stmt = conn.prepare(
-        "SELECT src, dst, kind, weight, reason FROM edges WHERE status != 'rejected' ORDER BY weight DESC",
+        "SELECT src, dst, kind, weight, reason, tier FROM edges WHERE status != 'rejected' ORDER BY weight DESC",
     )?;
     let rows = stmt.query_map([], |row| {
-        Ok(Edge { src: row.get(0)?, dst: row.get(1)?, kind: row.get(2)?, weight: row.get(3)?, reason: row.get(4)? })
+        edge_from_row(row)
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
@@ -36,11 +51,11 @@ pub fn edges(conn: &Connection) -> Result<Vec<Edge>> {
 /// The links touching one item.
 pub fn edges_of(conn: &Connection, id: &str) -> Result<Vec<Edge>> {
     let mut stmt = conn.prepare(
-        "SELECT src, dst, kind, weight, reason FROM edges
+        "SELECT src, dst, kind, weight, reason, tier FROM edges
          WHERE status != 'rejected' AND (src = ?1 OR dst = ?1) ORDER BY weight DESC",
     )?;
     let rows = stmt.query_map([id], |row| {
-        Ok(Edge { src: row.get(0)?, dst: row.get(1)?, kind: row.get(2)?, weight: row.get(3)?, reason: row.get(4)? })
+        edge_from_row(row)
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }

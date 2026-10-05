@@ -275,7 +275,8 @@
 
   function onItemLinked(event: ItemLinked) {
     if (phase !== 'saved' || !savedIds.includes(event.id) || linkedTo?.length) return
-    linkedTo = event.related.slice(0, 3).map((r) => r.title)
+    // Only links Plexus is fairly sure about; maybes would read as noise here.
+    linkedTo = event.related.filter((r) => r.tier !== 'maybe').slice(0, 3).map((r) => r.title)
     if (!linkedTo.length && savedIds.length > 1) return // Another of them may still link.
     clearTimeout(closeTimer)
     closeTimer = setTimeout(close, SHOW_LINKS_MS)
@@ -336,7 +337,7 @@
             {#each linkedTo as title}<li>{title}</li>{/each}
           </ul>
         {:else}
-          <p class="muted">Saved. Nothing related yet; it will link up as you add more.</p>
+          <p class="muted">Saved. Nothing closely related yet; it will link up as you add more.</p>
         {/if}
         {#if alreadySaved}
           <p class="muted">{alreadySaved} {alreadySaved === 1 ? 'was' : 'were'} already in Plexus.</p>
