@@ -21,3 +21,7 @@ Early design. Nothing to run yet. See [docs/OVERVIEW.md](docs/OVERVIEW.md) for t
 
 [Tauri v2](https://v2.tauri.app) (Rust) + Svelte 5 + TypeScript + Vite, SQLite with sqlite-vec,
 Sigma.js for the graph.
+
+## License
+
+[MIT](LICENSE)

@@ -9,7 +9,7 @@ See [docs/OVERVIEW.md](docs/OVERVIEW.md) for the product and technical design.
 
 ## Status
 
-Pre-scaffold. The repo holds only project files and the design docs. Update this section and
+Pre-scaffold, working on milestone M0 ([docs/plans/M0.md](docs/plans/M0.md)). Update this section and
 **Commands** below as soon as the app is scaffolded.
 
 ## Principles
@@ -28,25 +28,28 @@ These decide trade-offs. When two options conflict, the one that better serves t
 5. **Easy for everyone.** One action (paste), plain words in the UI (no "atoms", "embeddings" or
    "chunks"), power features behind a toggle.
 6. **Lightweight.** One Tauri process, no server sidecar, small install, near-zero idle CPU.
-7. **Raw input is the source of truth.** Original pastes are never modified. Everything derived from
-   them (chunks, embeddings, concepts, edges, clusters, layout) is a rebuildable cache tagged with
-   the pipeline version that produced it.
+7. **Files are the source of truth.** Every item is one markdown note in the user's library folder
+   (plus its original file, for images and documents). The SQLite database is an index built from
+   the folder and must be fully rebuildable from it. Everything derived (chunks, embeddings,
+   concepts, edges, topics, layout) lives in the database, tagged with the pipeline version that
+   produced it. See "Storage" in [docs/OVERVIEW.md](docs/OVERVIEW.md).
 
 ## Architecture (planned)
 
 ```
-Clipboard / hotkey / drag-drop
+Global hotkey → capture window (paste / drop / type) → Enter
         │
         ▼
-T0  <50ms  detect type → store raw → node appears (placeholder)
+T0  <50ms  detect type → secret check → write note (+ original) → node appears
 T1  <1s    extract text (local) → chunk → embed (local) → similarity edges → place in cluster
 T2  bg     LLM: title, summary, concepts, typed edges with reasons (bounded context)
         │
         ▼
-SQLite (raw items, chunks, vectors, FTS, concepts, edges, clusters, layout)
+Library folder (note files + originals)  ──reconcile──►  SQLite index
+                                                         (chunks, vectors, FTS, edges, layout)
         │
         ▼
-Svelte UI: graph map (Sigma.js), item reader, Ask agent
+Svelte UI: capture window, graph map (Sigma.js), item reader, Ask agent
 ```
 
 - **Frontend:** Svelte 5 + TypeScript + Vite. Graph rendering with Sigma.js + Graphology. Heavy graph
@@ -54,19 +57,30 @@ Svelte UI: graph map (Sigma.js), item reader, Ask agent
 - **Backend:** Tauri v2 (Rust). Keep it **thin and modular**: storage, extraction, embeddings, the
   ingest queue, LLM providers, and the command surface. The Rust side should stay easy to read
   for someone new to Rust.
-- **Storage:** SQLite (`rusqlite`, bundled) + sqlite-vec for vectors + FTS5 for keyword search.
-  One database file per knowledge base.
-- **Embeddings:** small local model (bge-small) via ONNX Runtime, shipped with the app.
+- **Storage:** note files in the library folder (default `~/Plexus/items/YYYY/MM/`), indexed by
+  SQLite (`rusqlite`, bundled) + sqlite-vec for vectors + FTS5 for keyword search, in
+  `<library>/.plexus/index.db`.
+- **Embeddings:** bge-small-en-v1.5 (int8 ONNX) via `fastembed`, shipped with the app.
 - **LLM providers:** OpenAI-compatible (Groq, OpenRouter, Ollama, LM Studio, …), Anthropic, Gemini.
   Keys live in the system keychain, never in files or the database.
 
 ### Planned layout
 
 ```
-frontend/   Svelte + Vite UI
-backend/    Rust / Tauri core
-docs/       product and design docs
-scripts/    build helpers (e.g. fetching the embedding model)
+frontend/              Svelte 5 + Vite; two entries: index.html (map), capture.html
+  src/lib/api.ts       typed wrappers for Rust commands and events (the only place that calls Rust)
+  src/lib/mock/        in-memory backend for `npm run dev:ui`
+  src/lib/graph/       Sigma setup, reducers, layout worker
+  src/capture/         capture window
+  src/components/      map UI components
+backend/               Tauri v2 crate `plexus`
+  src/library/         note files: paths, frontmatter, originals, reconcile
+  src/db/              SQLite index: migrations, items, edges, search
+  src/capture/         kind detection, secrets, dedupe, hotkeys, clipboard
+  src/pipeline/        background worker: chunk, embed, link
+  src/fetch/           URL fetching + article extraction
+docs/                  product and design docs; plans/ per milestone
+scripts/               fetch-model, seed
 ```
 
 ## AI context rules
@@ -91,13 +105,16 @@ These are hard rules, not guidelines.
 - UI copy uses plain language. Keyboard shortcuts are always shown next to their command.
 - Every user-visible AI change is explainable (has a reason) and undoable.
 - Keep docs current: update this file and `docs/OVERVIEW.md` when architecture or commands change.
+- **Commit messages are a single line** (no body, no trailers).
 
 ## Prior art and licensing
 
-- **DocBook** (`~/ideas/DocBook`, same author): source of the Tauri shell, capture/hotkeys,
-  local embeddings, FTS search and the provider layer. Reuse freely.
-- **Atomic** (github.com/kenforthewin/atomic, **MIT**): code may be adapted with attribution
-  (keep their copyright notice in a `THIRD_PARTY_NOTICES` file).
+Plexus is its own codebase, written fresh.
+
+- **Atomic** (github.com/kenforthewin/atomic, **MIT**): the main reference. Code may be adapted
+  with attribution: keep their copyright notice in `THIRD_PARTY_NOTICES.md` and note the source
+  file in a comment. Useful parts: markdown chunker, semantic-edge computation, provider traits,
+  deferred graph maintenance, structured-output handling.
 - **LLM Wiki** (github.com/nashsu/llm_wiki, **GPL-3.0**): read for ideas only. **Do not copy code.**
 
 ## Commands
