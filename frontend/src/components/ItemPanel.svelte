@@ -21,6 +21,8 @@
 
   let detail = $state<ItemDetail | null>(null)
   let imageUrl = $state<string | null>(null)
+  /** Preview URLs of the extra originals that are images, by position. */
+  let extraUrls = $state<(string | null)[]>([])
   let error = $state('')
 
   // Reloads when the item changes in the background too (a link's page was read).
@@ -31,12 +33,14 @@
     void version
     detail = null
     imageUrl = null
+    extraUrls = []
     error = ''
     getItem(current)
       .then(async (d) => {
         if (current !== id) return
         detail = d
         if (d.kind === 'image' && d.assetFile) imageUrl = await fileUrl(d.assetFile)
+        extraUrls = await Promise.all(d.attachments.map((a) => (a.kind === 'image' ? fileUrl(a.file) : null)))
       })
       .catch((e) => (error = String(e)))
   })
@@ -99,6 +103,17 @@
         {:else if detail.kind === 'file'}
           <p class="muted">{detail.mime ?? 'File'}. Its text will be readable once document support lands.</p>
         {/if}
+        {#each detail.attachments as attachment, i}
+          {#if extraUrls[i]}
+            <img src={extraUrls[i]} alt={attachment.name} />
+          {:else if attachment.kind !== 'image'}
+            <button class="attachment" onclick={() => openItemFile(detail!.id, i)}>
+              <span class="name">{attachment.name}</span>
+              {#if attachment.size}<span class="muted">{formatBytes(attachment.size)}</span>{/if}
+              <span class="open">Open</span>
+            </button>
+          {/if}
+        {/each}
         <!-- Sanitised with DOMPurify above. -->
         {#if noteHtml}<div class="markdown note">{@html noteHtml}</div>{/if}
       {:else if detail.kind === 'url' && !html}
@@ -207,8 +222,40 @@
   }
 
   .content img {
+    display: block;
     max-width: 100%;
     border-radius: 8px;
+  }
+
+  .content img + img,
+  .content img + .attachment,
+  .attachment + img,
+  .attachment + .attachment {
+    margin-top: 8px;
+  }
+
+  .attachment {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-2);
+    text-align: left;
+  }
+
+  .attachment .name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .attachment .open {
+    color: var(--accent);
+    font-size: 12px;
   }
 
   .source {

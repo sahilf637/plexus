@@ -54,7 +54,8 @@ export const getItem = (id: string) => call<ItemDetail>('get_item', { id })
 export const getMap = () => call<MapData>('get_map')
 export const saveLayout = (positions: Position[]) => call<void>('save_layout', { positions })
 export const search = (query: string) => call<string[]>('search', { query })
-export const openItemFile = (id: string) => call<void>('open_item_file', { id })
+/** Opens the item's original (or its note); `attachment` picks one of the extra originals. */
+export const openItemFile = (id: string, attachment?: number) => call<void>('open_item_file', { id, attachment })
 export const openSource = (id: string) => call<void>('open_source', { id })
 
 /** A URL the webview can load a library file from (images in the item panel). */
@@ -70,6 +71,25 @@ export async function captureBytes(blob: Blob, name: string, note = '', force = 
   return call<CaptureResult>('capture_bytes', bytes, {
     'x-name': encodeURIComponent(name),
     'x-mime': blob.type,
+    'x-note': encodeURIComponent(note),
+    'x-force': force ? '1' : '0',
+  })
+}
+
+/** Several images and files with one note, saved as one item. Pasted ones go as raw bytes,
+ * one after another; dropped ones by path. */
+export async function captureMany(
+  parts: ({ blob: Blob; name: string } | { path: string })[],
+  note: string,
+  force = false,
+): Promise<CaptureResult> {
+  const blobs = parts.flatMap((p) => ('blob' in p ? [p.blob] : []))
+  const bytes = new Uint8Array(await new Blob(blobs).arrayBuffer())
+  const described = parts.map((p) =>
+    'blob' in p ? { name: p.name, mime: p.blob.type, size: p.blob.size } : { path: p.path },
+  )
+  return call<CaptureResult>('capture_many', bytes, {
+    'x-parts': encodeURIComponent(JSON.stringify(described)),
     'x-note': encodeURIComponent(note),
     'x-force': force ? '1' : '0',
   })

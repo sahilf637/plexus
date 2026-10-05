@@ -6,6 +6,7 @@
   import {
     captureBytes,
     captureFile,
+    captureMany,
     capturePreview,
     captureText,
     hideCapture,
@@ -71,7 +72,8 @@
         images && (images === 1 ? 'Image' : `${images} images`),
         files && (files === 1 ? 'File' : `${files} files`),
       ].filter(Boolean)
-      return parts.join(' + ') + (hasNote ? ' · with note' : '')
+      if (attachments.length === 1) return parts.join('') + (hasNote ? ' · with note' : '')
+      return parts.join(' + ') + (hasNote ? ' · one item' : ` · ${attachments.length} items`)
     }
     if (!hasNote || !preview) return ''
     return preview.kind === 'code' && preview.language
@@ -195,8 +197,14 @@
     phase = 'saving'
     try {
       const results: CaptureResult[] = []
-      if (attachments.length) {
-        // Each attachment becomes an item, with the note about it.
+      if (attachments.length > 1 && hasNote) {
+        // A note ties them together: one item holding all of them.
+        const parts = attachments.map((a) => (a.path ? { path: a.path } : { blob: a.blob!, name: a.name }))
+        const result = await captureMany(parts, text, force)
+        if (result.status === 'secret') return askAboutSecret(result.reason)
+        results.push(result)
+      } else if (attachments.length) {
+        // Without a note, each one is its own item.
         for (const a of attachments) {
           const result = a.path
             ? await captureFile(a.path, text, force)
@@ -361,7 +369,11 @@
         bind:this={textarea}
         bind:value={text}
         oninput={() => phase === 'secret' && (phase = 'edit')}
-        placeholder={attachments.length ? 'Add a note about this (optional)…' : 'Paste or drop anything, or type…'}
+        placeholder={attachments.length > 1
+          ? 'Add a note to keep these together as one item, or save them separately…'
+          : attachments.length
+            ? 'Add a note about this (optional)…'
+            : 'Paste or drop anything, or type…'}
         spellcheck="false"
         autofocus
         disabled={phase === 'saving'}

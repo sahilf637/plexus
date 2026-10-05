@@ -1,10 +1,12 @@
 //! The command surface the UI can call. Each command is a thin wrapper over a module function.
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 
 use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{AppHandle, State};
 
+use crate::capture::detect::{self, Kind};
 use crate::capture::{self, CaptureResult, Preview, clipboard, hotkey, save};
 use crate::db::graph;
 use crate::db::items::{self, Item};
@@ -106,22 +108,88 @@ pub fn capture_bytes(app: AppHandle, state: State<'_, AppState>, request: Reques
         .map(|saved| capture::announce(&app, saved))
 }
 
+/// Several images and files with one note, saved as one item. The bytes of pasted ones are
+/// the raw body, one after another; `x-parts` (URI-encoded JSON) lists each part as
+/// `{"name", "mime", "size"}` for bytes in the body, or `{"path"}` for a file on disk.
+#[tauri::command]
+pub fn capture_many(app: AppHandle, state: State<'_, AppState>, request: Request<'_>) -> Result<CaptureResult> {
+    #[derive(serde::Deserialize)]
+    struct Part {
+        name: Option<String>,
+        mime: Option<String>,
+        size: Option<usize>,
+        path: Option<PathBuf>,
+    }
+    let InvokeBody::Raw(body) = request.body() else {
+        return Err(Error::Invalid("expected the files' bytes".into()));
+    };
+    let header = |name: &str| request.headers().get(name).and_then(|v| v.to_str().ok()).unwrap_or("");
+    let parts: Vec<Part> = serde_json::from_str(&clipboard::percent_decode(header("x-parts")))?;
+    let note = clipboard::percent_decode(header("x-note"));
+    let force = header("x-force") == "1";
+
+    // (name, mime, bytes): files on disk are read, pasted ones are sliced out of the body.
+    let mut loaded: Vec<(String, String, Cow<[u8]>)> = Vec::with_capacity(parts.len());
+    let mut offset = 0;
+    for part in parts {
+        if let Some(path) = part.path {
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let mime = capture::mime_from_name(&name).to_string();
+            loaded.push((name, mime, Cow::Owned(std::fs::read(&path)?)));
+        } else {
+            let size = part.size.unwrap_or(0);
+            let bytes = body.get(offset..offset + size).ok_or_else(|| Error::Invalid("file sizes don't add up".into()))?;
+            offset += size;
+            let name = part.name.unwrap_or_default();
+            let mime = part.mime.filter(|m| !m.is_empty()).unwrap_or_else(|| capture::mime_from_name(&name).to_string());
+            loaded.push((name, mime, Cow::Borrowed(bytes)));
+        }
+    }
+    let originals: Vec<save::Original> =
+        loaded.iter().map(|(name, mime, bytes)| save::Original { name, mime, bytes }).collect();
+    timed("files", || save::files(&state.library, &state.db, &originals, &note, force))
+        .map(|saved| capture::announce(&app, saved))
+}
+
 /// One item with its note body, for the detail panel.
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ItemDetail {
     #[serde(flatten)]
     item: Item,
     body: String,
     /// Absolute path of the original file, if any, for opening or previewing it.
     asset_file: Option<PathBuf>,
+    /// More originals saved with it, after the first.
+    attachments: Vec<AttachmentDetail>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentDetail {
+    name: String,
+    file: PathBuf,
+    kind: Kind,
+    size: Option<u64>,
 }
 
 #[tauri::command]
 pub fn get_item(state: State<'_, AppState>, id: String) -> Result<ItemDetail> {
     let item = find_item(&state, &id)?;
-    let body = state.library.read_note(&state.library.absolute(&item.path))?.body;
+    let note_path = state.library.absolute(&item.path);
+    let note = state.library.read_note(&note_path)?;
     let asset_file = item.asset_path.as_deref().map(|p| state.library.absolute(p));
-    Ok(ItemDetail { item, body, asset_file })
+    let attachments = note
+        .meta
+        .attachments
+        .iter()
+        .map(|a| {
+            let name = a.original_name.clone().unwrap_or_else(|| a.file.clone());
+            let kind = detect::detect_file(&name, a.mime.as_deref().unwrap_or("")).kind;
+            AttachmentDetail { kind, size: a.size, file: note_path.with_file_name(&a.file), name }
+        })
+        .collect();
+    Ok(ItemDetail { item, body: note.body, asset_file, attachments })
 }
 
 /// Everything the map draws: items, edges and saved positions.
@@ -151,12 +219,20 @@ pub fn search(state: State<'_, AppState>, query: String) -> Result<Vec<String>> 
 }
 
 /// Opens the item's original file (or, for notes without one, the note itself) in the
-/// default app.
+/// default app; `attachment` picks one of the originals saved after the first.
 #[tauri::command]
-pub fn open_item_file(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<()> {
+pub fn open_item_file(app: AppHandle, state: State<'_, AppState>, id: String, attachment: Option<usize>) -> Result<()> {
     use tauri_plugin_opener::OpenerExt;
     let item = find_item(&state, &id)?;
-    let path = state.library.absolute(item.asset_path.as_deref().unwrap_or(&item.path));
+    let path = match attachment {
+        Some(index) => {
+            let note_path = state.library.absolute(&item.path);
+            let note = state.library.read_note(&note_path)?;
+            let file = note.meta.attachments.get(index).ok_or_else(|| Error::Invalid("no such attachment".into()))?;
+            note_path.with_file_name(&file.file)
+        }
+        None => state.library.absolute(item.asset_path.as_deref().unwrap_or(&item.path)),
+    };
     app.opener().open_path(path.to_string_lossy(), None::<&str>).map_err(|e| Error::Invalid(e.to_string()))
 }
 

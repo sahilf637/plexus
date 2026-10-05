@@ -66,6 +66,8 @@ export interface ItemDetail extends Item {
   body: string
   /** Absolute path of the original file, if any. */
   assetFile: string | null
+  /** More originals saved with it, after the first. */
+  attachments: { name: string; file: string; kind: Kind; size: number | null }[]
 }
 
 export interface Edge {

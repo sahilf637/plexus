@@ -85,6 +85,7 @@ pub fn run() {
             commands::capture_text,
             commands::capture_file,
             commands::capture_bytes,
+            commands::capture_many,
             commands::list_items,
             commands::get_item,
             commands::get_map,

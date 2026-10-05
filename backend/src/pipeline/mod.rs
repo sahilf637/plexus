@@ -159,8 +159,12 @@ fn process(app: &AppHandle, state: &AppState, id: &str) -> Result<()> {
 
 /// The text that stands for an item when finding related ones.
 fn embedding_text(item: &Item, body: &str) -> String {
-    static IMAGE_EMBED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"!\[[^\]]*\]\([^)]*\)").unwrap());
-    let body = IMAGE_EMBED.replace_all(body, "");
+    // Embedded images and links to the item's own files say nothing about it; web links stay.
+    static LOCAL_EMBED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"!?\[[^\]]*\]\(([^)]*)\)").unwrap());
+    let body = LOCAL_EMBED.replace_all(body, |c: &regex::Captures| {
+        let target = &c[1];
+        if target.contains("://") { c[0].to_string() } else { String::new() }
+    });
     let body = body.trim();
     match item.kind {
         // Until text is extracted from them (M1), images and files have the user's note, or
@@ -195,6 +199,8 @@ mod tests {
         item.title = "Pasted image".into();
         assert_eq!(embedding_text(&item, "![Pasted image](p.png)\n"), "");
         assert_eq!(embedding_text(&item, "![Pasted image](p.png)\n\nOur sprint board\n"), "Our sprint board");
+        let several = "![Board](b.png)\n![Shot 2.png](b_2.png)\n[Q3.pdf](b_3.pdf)\n\nSee [the doc](https://x.io/d)\n";
+        assert_eq!(embedding_text(&item, several), "See [the doc](https://x.io/d)");
     }
 
     /// Save → chunk → embed → link with the real model, in a scratch library.

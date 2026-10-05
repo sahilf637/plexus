@@ -11,8 +11,8 @@ use super::detect::{self, Detected, Kind};
 use super::{CaptureResult, secrets};
 use crate::db::Db;
 use crate::db::items::{self, Item};
-use crate::error::Result;
-use crate::library::note::{FORMAT_VERSION, Note, NoteMeta};
+use crate::error::{Error, Result};
+use crate::library::note::{Attachment, FORMAT_VERSION, Note, NoteMeta};
 use crate::library::reconcile::{item_from_note, modified_nanos};
 use crate::library::{self, Library};
 
@@ -45,41 +45,62 @@ pub fn text(library: &Library, db: &Db, text: &str, force: bool) -> Result<Saved
     }
 
     let meta = new_meta(&detected, body_hash, source);
-    write(library, db, meta, body, None)
+    write(library, db, meta, body, &[])
+}
+
+/// An image or file to save, as captured.
+pub struct Original<'a> {
+    pub name: &'a str,
+    pub mime: &'a str,
+    pub bytes: &'a [u8],
 }
 
 /// An image or file, from bytes (pasted) or from disk (dropped or copied in a file manager),
 /// with an optional note about it from the user. The note becomes the body (below the image)
 /// and its first line the title.
 pub fn file(library: &Library, db: &Db, name: &str, mime: &str, bytes: &[u8], note: &str, force: bool) -> Result<Saved> {
-    let note = note.replace("\r\n", "\n");
-    let note = note.trim();
-    if !force && let Some(reason) = secrets::find_secret(note) {
-        return Ok(Saved::not_saved(CaptureResult::Secret { reason }));
-    }
-    let asset_hash = library::hash(bytes);
-    if let Some(existing) = db.with(|conn| items::find_duplicate(conn, "", Some(&asset_hash)))? {
-        return Ok(Saved::not_saved(CaptureResult::Duplicate { id: existing.id, title: existing.title }));
-    }
-    let mut detected = detect::detect_file(name, mime);
-    if !note.is_empty() {
-        detected.title = detect::detect_text(note).title;
-    }
-    // No text is extracted from the file yet (OCR, PDF text come in M1), so the body is just
-    // the user's note.
-    let body = if note.is_empty() { String::new() } else { format!("{note}\n") };
-    let mut meta = new_meta(&detected, library::text_hash(&body), None);
-    meta.asset_hash = Some(asset_hash);
-    meta.original_name = Some(name.to_string());
-    meta.mime = Some(mime.to_string());
-    meta.size = Some(bytes.len() as u64);
-    write(library, db, meta, body, Some((extension(name, mime), bytes)))
+    files(library, db, &[Original { name, mime, bytes }], note, force)
 }
 
 pub fn file_from_disk(library: &Library, db: &Db, path: &Path, note: &str, force: bool) -> Result<Saved> {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let bytes = fs::read(path)?;
     file(library, db, &name, super::mime_from_name(&name), &bytes, note, force)
+}
+
+/// Several images and files captured together with one note about them: one item, with every
+/// original next to its note. The first one decides the item's kind. Only a single original is
+/// checked for duplicates; a set saved with a note is a new item each time.
+pub fn files(library: &Library, db: &Db, originals: &[Original], note: &str, force: bool) -> Result<Saved> {
+    let Some(first) = originals.first() else {
+        return Err(Error::Invalid("nothing to save".into()));
+    };
+    let note = note.replace("\r\n", "\n");
+    let note = note.trim();
+    if !force && let Some(reason) = secrets::find_secret(note) {
+        return Ok(Saved::not_saved(CaptureResult::Secret { reason }));
+    }
+    let asset_hash = library::hash(first.bytes);
+    if originals.len() == 1
+        && let Some(existing) = db.with(|conn| items::find_duplicate(conn, "", Some(&asset_hash)))?
+    {
+        return Ok(Saved::not_saved(CaptureResult::Duplicate { id: existing.id, title: existing.title }));
+    }
+    let mut detected = detect::detect_file(first.name, first.mime);
+    if !note.is_empty() {
+        detected.title = detect::detect_text(note).title;
+    } else if originals.len() > 1 {
+        detected.title = format!("{} and {} more", detected.title, originals.len() - 1);
+    }
+    // No text is extracted from the files yet (OCR, PDF text come in M1), so the body is just
+    // the user's note.
+    let body = if note.is_empty() { String::new() } else { format!("{note}\n") };
+    let mut meta = new_meta(&detected, library::text_hash(&body), None);
+    meta.asset_hash = Some(asset_hash);
+    meta.original_name = Some(first.name.to_string()).filter(|n| !n.is_empty());
+    meta.mime = Some(first.mime.to_string());
+    meta.size = Some(first.bytes.len() as u64);
+    write(library, db, meta, body, originals)
 }
 
 fn new_meta(detected: &Detected, hash: String, source: Option<String>) -> NoteMeta {
@@ -98,6 +119,7 @@ fn new_meta(detected: &Detected, hash: String, source: Option<String>) -> NoteMe
         mime: None,
         size: None,
         extracted: None,
+        attachments: Vec::new(),
         links: Vec::new(),
         extra: Default::default(),
     }
@@ -105,19 +127,39 @@ fn new_meta(detected: &Detected, hash: String, source: Option<String>) -> NoteMe
 
 /// Writes the original (if any), then the note, then the index row. The note is the source of
 /// truth, so a crash after writing it is repaired by the next reconcile.
-fn write(library: &Library, db: &Db, mut meta: NoteMeta, mut body: String, asset: Option<(String, &[u8])>) -> Result<Saved> {
+fn write(library: &Library, db: &Db, mut meta: NoteMeta, mut body: String, originals: &[Original]) -> Result<Saved> {
     let path = library.path_for(&meta);
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
 
-    if let Some((ext, bytes)) = asset {
-        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-        let name = format!("{stem}.{ext}");
-        crate::settings::write_atomic(&path.with_file_name(&name), bytes)?;
-        if meta.kind == Kind::Image {
-            // The image first, then the note about it, as the user saw them in the capture window.
-            let embed = format!("![{}]({name})\n", meta.title.replace(['[', ']'], ""));
-            body = if body.is_empty() { embed } else { format!("{embed}\n{body}") };
+    // The originals first, then the note about them, as the user saw them in the capture window.
+    let mut embeds = Vec::new();
+    for (i, original) in originals.iter().enumerate() {
+        let ext = extension(original.name, original.mime);
+        // Slugs never contain "_", so these names can't clash with another note's.
+        let file = if i == 0 { format!("{stem}.{ext}") } else { format!("{stem}_{}.{ext}", i + 1) };
+        crate::settings::write_atomic(&path.with_file_name(&file), original.bytes)?;
+        let label = if i == 0 || original.name.is_empty() { meta.title.as_str() } else { original.name };
+        let label = label.replace(['[', ']'], "");
+        if detect::detect_file(original.name, original.mime).kind == Kind::Image {
+            embeds.push(format!("![{label}]({file})"));
+        } else if originals.len() > 1 {
+            embeds.push(format!("[{label}]({file})"));
         }
-        meta.asset = Some(name);
+        if i == 0 {
+            meta.asset = Some(file);
+        } else {
+            meta.attachments.push(Attachment {
+                file,
+                hash: library::hash(original.bytes),
+                original_name: Some(original.name.to_string()).filter(|n| !n.is_empty()),
+                mime: Some(original.mime.to_string()),
+                size: Some(original.bytes.len() as u64),
+            });
+        }
+    }
+    if !embeds.is_empty() {
+        let embeds = embeds.join("\n") + "\n";
+        body = if body.is_empty() { embeds } else { format!("{embeds}\n{body}") };
     }
 
     let note = Note { meta, body };
@@ -256,6 +298,37 @@ mod tests {
         // A secret in the note is caught like in pasted text.
         let secret = file(&library, &db, "x.png", "image/png", b"x", "key ghp_abcdefghijklmnopqrstuvwxyz0123456789", false).unwrap();
         assert!(matches!(secret.result, CaptureResult::Secret { .. }));
+    }
+
+    #[test]
+    fn several_originals_with_a_note_make_one_item() {
+        let (_dir, library, db) = setup();
+        let originals = [
+            Original { name: "board.png", mime: "image/png", bytes: b"one" },
+            Original { name: "Screenshot 2.png", mime: "image/png", bytes: b"two" },
+            Original { name: "Q3 report.pdf", mime: "application/pdf", bytes: b"%PDF" },
+        ];
+        let item = saved_item(files(&library, &db, &originals, "Sprint review\nAPI slipped.", false).unwrap());
+        assert_eq!((item.title.as_str(), item.kind), ("Sprint review", Kind::Image));
+
+        let note = library.read_note(&library.absolute(&item.path)).unwrap();
+        let primary = note.meta.asset.clone().unwrap();
+        let stem = primary.trim_end_matches(".png");
+        let extra: Vec<_> = note.meta.attachments.iter().map(|a| a.file.as_str()).collect();
+        assert_eq!(extra, vec![format!("{stem}_2.png"), format!("{stem}_3.pdf")]);
+        assert_eq!(note.meta.attachments[1].original_name.as_deref(), Some("Q3 report.pdf"));
+        assert_eq!(
+            note.body,
+            format!(
+                "![Sprint review]({primary})\n![Screenshot 2.png]({stem}_2.png)\n[Q3 report.pdf]({stem}_3.pdf)\n\nSprint review\nAPI slipped.\n"
+            )
+        );
+        let folder = library.absolute(&item.path).with_file_name("");
+        assert_eq!(fs::read(folder.join(format!("{stem}_3.pdf"))).unwrap(), b"%PDF");
+
+        // The note's metadata survives a rebuild of the index.
+        let again = Note::parse(&fs::read_to_string(library.absolute(&item.path)).unwrap()).unwrap();
+        assert_eq!(again.meta.attachments, note.meta.attachments);
     }
 
     #[test]

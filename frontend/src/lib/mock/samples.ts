@@ -34,5 +34,6 @@ export function sampleItems(): ItemDetail[] {
     extracted: kind === 'url' ? 'web@1' : null,
     body,
     assetFile: null,
+    attachments: [],
   }))
 }

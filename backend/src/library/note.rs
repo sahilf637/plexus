@@ -42,12 +42,29 @@ pub struct NoteMeta {
     /// the user changed it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extracted: Option<String>,
+    /// More originals captured together with `asset` under one note (several screenshots with
+    /// a note about them), in the order they were added. Also next to the note.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
     /// Links the user accepted or made: ids of other items.
     #[serde(default)]
     pub links: Vec<String>,
     /// Keys added by the user or a newer version, kept as they are.
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_norway::Value>,
+}
+
+/// An original file beyond the first one (`asset`), next to the note.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Attachment {
+    pub file: String,
+    pub hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -117,6 +134,7 @@ mod tests {
                 mime: None,
                 size: None,
                 extracted: None,
+                attachments: Vec::new(),
                 links: vec![],
                 extra: BTreeMap::new(),
             },

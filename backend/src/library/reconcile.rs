@@ -149,6 +149,7 @@ mod tests {
                 mime: None,
                 size: None,
                 extracted: None,
+                attachments: Vec::new(),
                 links: vec![],
                 extra: BTreeMap::new(),
             },

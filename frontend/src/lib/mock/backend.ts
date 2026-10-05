@@ -67,6 +67,7 @@ function addItem(title: string, kind: Kind, body: string): CaptureResult {
     extracted: null,
     body,
     assetFile: null,
+    attachments: [],
   }
   const existing = items.find((i) => i.bodyHash === body)
   if (existing) return { status: 'duplicate', id: existing.id, title: existing.title }
@@ -153,6 +154,14 @@ const commands: Record<string, Command> = {
     if (note && preview(note).secret && headers?.['x-force'] !== '1') return { status: 'secret', reason: preview(note).secret! }
     const kind = headers?.['x-mime']?.startsWith('image/') ? 'image' : 'file'
     return addItem(note ? preview(note).title : name, kind, `${note}\n${name}-${Date.now()}`)
+  },
+  capture_many: (_, headers): CaptureResult => {
+    const parts: { name?: string; path?: string; mime?: string }[] = JSON.parse(decodeURIComponent(headers?.['x-parts'] ?? '[]'))
+    const note = decodeURIComponent(headers?.['x-note'] ?? '')
+    if (preview(note).secret && headers?.['x-force'] !== '1') return { status: 'secret', reason: preview(note).secret! }
+    const first = parts[0] ?? {}
+    const kind = first.mime?.startsWith('image/') || /\.(png|jpe?g|gif|webp)$/i.test(first.path ?? '') ? 'image' : 'file'
+    return addItem(preview(note).title, kind, `${note}\n${parts.length} files ${Date.now()}`)
   },
   list_items: (): Item[] => items,
   get_map: async (): Promise<MapData> => {
