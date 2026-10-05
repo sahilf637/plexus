@@ -66,7 +66,10 @@ Svelte UI: capture window, graph map (Sigma.js), item reader, Ask agent
   `<library>/.plexus/index.db`.
 - **Embeddings:** bge-small-en-v1.5 (int8 ONNX) via `fastembed`, shipped with the app.
 - **LLM providers:** OpenAI-compatible (Groq, OpenRouter, Ollama, LM Studio, …), Anthropic, Gemini.
-  Keys live in the system keychain (`keyring`), never in files or the database. Only new items
+  Several named **connections** can be saved (provider, address, model, key); one is in use. Each
+  connection's key lives in the system keychain (`keyring`) under the connection's id, never in
+  files or the database, and is removed with the connection. A key is never sent over plain
+  `http://` except to this computer or a home network. Only new items
   are enriched (items saved after AI was switched on); `enrich::Lane::Backfill` is the low-priority
   lane a future "deeper linking" pass will use. A bad key pauses the queue; a daily call limit
   applies.

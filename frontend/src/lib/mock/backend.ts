@@ -1,7 +1,7 @@
 // In-memory stand-in for the Rust backend, used by `npm run dev:ui`. Detection here is a rough
 // approximation, good enough to exercise the UI; the real rules live in Rust.
 
-import type { AiKeyStatus, ModelInfo, CaptureResult, Concept, ConceptItems, Deleted, Edge, EnrichStatus, HotkeyStatus, Item, ItemDetail, ItemLinked, Kind, MapData, Position, Preview, Settings, Tier } from '../types'
+import type { AiConnection, AiKeyStatus, ModelInfo, CaptureResult, Concept, ConceptItems, Deleted, Edge, EnrichStatus, HotkeyStatus, Item, ItemDetail, ItemLinked, Kind, MapData, Position, Preview, Settings, Tier } from '../types'
 import { sampleConcepts, sampleItems } from './samples'
 
 let settings: Settings = {
@@ -11,19 +11,18 @@ let settings: Settings = {
   startAtLogin: true,
   fetchLinks: true,
   watchClipboard: false,
-  ai: {
-    enabled: false,
-    preset: 'openai',
-    kind: 'openai',
-    baseUrl: 'https://api.openai.com/v1',
-    model: 'gpt-4o-mini',
-    vision: true,
-    dailyLimit: 500,
-  },
+  ai: { enabled: false, connections: [], active: '', dailyLimit: 500 },
 }
 
 // The keychain, the AI queue and what the AI said (concepts and typed links), simulated.
-let hasKey = false
+const keys = new Map<string, string>()
+const isLocal = (preset: string) => /ollama|lmstudio/.test(preset)
+const connectionOf = (id: string) => settings.ai.connections.find((c) => c.id === id)
+/** The connection in use can make calls: it has a key, or it's a local server. */
+const ready = () => {
+  const c = connectionOf(settings.ai.active)
+  return !!c && (keys.has(c.id) || isLocal(c.preset))
+}
 let enrichState: EnrichStatus = { state: 'idle', pending: 0, message: null }
 const conceptsByItem = new Map<string, Concept[]>()
 const aiEdges: Edge[] = [
@@ -159,7 +158,7 @@ const setStatus = (status: EnrichStatus) => emit('enrich-status', (enrichState =
  * and a typed link to the closest item. */
 function enrich(item: ItemDetail, closest?: string) {
   if (!settings.ai.enabled) return
-  if (!hasKey && !/ollama|lmstudio|custom/.test(settings.ai.preset)) {
+  if (!ready()) {
     setStatus({ state: 'paused', pending: 1, message: "The AI provider didn't accept the key (no key set). Check it in Settings." })
     return
   }
@@ -223,23 +222,30 @@ type Command = (args: Record<string, unknown>, headers?: Record<string, string>)
 const commands: Record<string, Command> = {
   get_settings: () => settings,
   set_settings: (args) => {
+    const previous = settings
     settings = args.settings as Settings
+    // A removed connection takes its key with it.
+    for (const gone of previous.ai.connections) if (!connectionOf(gone.id)) keys.delete(gone.id)
     if (!settings.ai.enabled) setStatus({ state: 'off', pending: 0, message: null })
     return settings
   },
-  ai_key_status: (): AiKeyStatus => ({ hasKey, error: null }),
+  ai_key_status: (args): AiKeyStatus => ({ hasKey: keys.has(String(args.id)), error: null }),
   set_ai_key: (args) => {
-    hasKey = String(args.key).trim() !== ''
-    if (hasKey && enrichState.state === 'paused') setStatus({ state: 'idle', pending: 0, message: null })
+    const key = String(args.key).trim()
+    if (key) keys.set(String(args.id), key)
+    else keys.delete(String(args.id))
+    if (key && enrichState.state === 'paused') setStatus({ state: 'idle', pending: 0, message: null })
   },
-  test_ai: async () => {
+  test_ai: async (args) => {
     await new Promise((done) => setTimeout(done, 700))
-    if (!hasKey && !/ollama|lmstudio|custom/.test(settings.ai.preset))
-      throw new Error("the provider didn't accept the key: no key set")
+    const c = args.connection as AiConnection
+    if (!String(args.key ?? '').trim() && !keys.has(c.id) && !isLocal(c.preset)) throw new Error("the provider didn't accept the key: no key set")
+    if (String(args.key ?? '').includes('bad')) throw new Error("the provider didn't accept the key: Incorrect API key")
   },
-  list_ai_models: async (): Promise<ModelInfo[]> => {
+  list_ai_models: async (args): Promise<ModelInfo[]> => {
     await new Promise((done) => setTimeout(done, 500))
-    if (!hasKey && !/ollama|lmstudio|custom/.test(settings.ai.preset)) throw new Error("the provider didn't accept the key: no key set")
+    const c = args.connection as AiConnection
+    if (!String(args.key ?? '').trim() && !keys.has(c.id) && !isLocal(c.preset)) throw new Error("the provider didn't accept the key: no key set")
     const lists: Record<string, ModelInfo[]> = {
       openai: [{ id: 'gpt-4.1', vision: true }, { id: 'gpt-4o-mini', vision: true }, { id: 'o3-mini', vision: false }],
       anthropic: [{ id: 'claude-haiku-4-5-20251001', vision: true }, { id: 'claude-sonnet-5-5', vision: true }],
@@ -247,7 +253,7 @@ const commands: Record<string, Command> = {
       groq: [{ id: 'llama-3.3-70b-versatile', vision: false }, { id: 'llama-4-scout', vision: true }],
       ollama: [{ id: 'llama3.2', vision: false }, { id: 'llava:13b', vision: true }],
     }
-    return lists[settings.ai.preset] ?? []
+    return lists[c.preset] ?? []
   },
   enrich_status: (): EnrichStatus => (settings.ai.enabled ? enrichState : { state: 'off', pending: 0, message: null }),
   enrich_retry: () => setStatus({ state: 'idle', pending: 0, message: null }),

@@ -32,12 +32,18 @@ pub fn set_settings(app: AppHandle, state: State<'_, AppState>, settings: Settin
         hotkey::register(&app);
     }
     if settings.ai != previous.ai {
+        // A connection that was removed takes its key with it.
+        for gone in previous.ai.connections.iter().filter(|c| !settings.ai.connections.iter().any(|n| n.id == c.id)) {
+            if let Err(e) = keys::clear(&gone.id) {
+                tracing::warn!(id = gone.id, "couldn't remove a deleted connection's key: {e}");
+            }
+        }
         enrich::settings_changed(&app, &previous.ai, &settings.ai);
     }
     Ok(settings)
 }
 
-/// Whether a key is stored for the AI provider that is selected.
+/// Whether a key is stored for a connection.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiKeyStatus {
@@ -47,21 +53,20 @@ pub struct AiKeyStatus {
 }
 
 #[tauri::command]
-pub fn ai_key_status(state: State<'_, AppState>) -> AiKeyStatus {
-    match keys::get(&state.settings.get().ai.preset) {
+pub fn ai_key_status(id: String) -> AiKeyStatus {
+    match keys::get(&id) {
         Ok(key) => AiKeyStatus { has_key: key.is_some(), error: None },
         Err(e) => AiKeyStatus { has_key: false, error: Some(e.to_string()) },
     }
 }
 
-/// Stores the key for the selected provider in the system keychain (an empty key removes it).
+/// Stores a connection's key in the system keychain (an empty key removes it).
 #[tauri::command]
-pub fn set_ai_key(app: AppHandle, state: State<'_, AppState>, key: String) -> Result<()> {
-    let preset = state.settings.get().ai.preset;
+pub fn set_ai_key(app: AppHandle, state: State<'_, AppState>, id: String, key: String) -> Result<()> {
     if key.trim().is_empty() {
-        keys::clear(&preset)?;
+        keys::clear(&id)?;
     } else {
-        keys::set(&preset, &key)?;
+        keys::set(&id, &key)?;
     }
     state.enricher.resume();
     enrich::requeue_missed(&state);
@@ -69,24 +74,25 @@ pub fn set_ai_key(app: AppHandle, state: State<'_, AppState>, key: String) -> Re
     Ok(())
 }
 
-/// Checks the saved AI settings and key with a tiny request. Runs off the UI thread: a slow
-/// provider can take a while.
+/// Checks a connection with a tiny request, before or after it's saved. `key` is the one just
+/// typed; without it the saved key is used. Runs off the UI thread: a slow provider can take a
+/// while.
 #[tauri::command]
-pub async fn test_ai(state: State<'_, AppState>) -> Result<()> {
-    let ai = state.settings.get().ai;
-    tauri::async_runtime::spawn_blocking(move || enrich::test_connection(&ai))
+pub async fn test_ai(connection: crate::settings::AiConnection, key: Option<String>) -> Result<()> {
+    tauri::async_runtime::spawn_blocking(move || enrich::test_connection(&connection, key.as_deref()))
         .await
         .map_err(|e| Error::Invalid(e.to_string()))?
 }
 
-/// The chat models the selected provider offers, for the model dropdown. Needs the saved key
-/// (unless the server is local).
+/// The chat models a connection's provider offers, for the model dropdown. Needs its key (just
+/// typed, or saved) unless the server is local.
 #[tauri::command]
-pub async fn list_ai_models(state: State<'_, AppState>) -> Result<Vec<crate::llm::models::Model>> {
-    let ai = state.settings.get().ai;
-    tauri::async_runtime::spawn_blocking(move || Ok(crate::llm::models::list(&enrich::config_for(&ai)?)?))
-        .await
-        .map_err(|e| Error::Invalid(e.to_string()))?
+pub async fn list_ai_models(connection: crate::settings::AiConnection, key: Option<String>) -> Result<Vec<crate::llm::models::Model>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(crate::llm::models::list(&enrich::connection_config(&connection, key.as_deref())?)?)
+    })
+    .await
+    .map_err(|e| Error::Invalid(e.to_string()))?
 }
 
 #[tauri::command]

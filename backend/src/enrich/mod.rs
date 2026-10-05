@@ -30,7 +30,7 @@ use crate::error::{Error, Result};
 use crate::library::text_hash;
 use crate::llm::{self, Config, LlmError, Request, keys};
 use crate::pipeline::own_text;
-use crate::settings::AiSettings;
+use crate::settings::{AiConnection, AiSettings};
 use crate::state::AppState;
 use apply::Answer;
 
@@ -294,7 +294,7 @@ fn process(app: &AppHandle, state: &AppState, id: &str) -> Result<()> {
     let config = config_for(&ai)?;
 
     // A picture is described first; once that's in its note it is linked again and comes back.
-    if ai.vision && vision::needs_description(&item) && describe_image(app, state, &config, &ai, &item)? {
+    if ai.active_connection().is_some_and(|c| c.vision) && vision::needs_description(&item) && describe_image(app, state, &config, &ai, &item)? {
         return Ok(());
     }
     if text.is_empty() {
@@ -380,13 +380,23 @@ fn announce(app: &AppHandle, state: &AppState, applied: &apply::Applied) -> Resu
 
 // --- settings, keys, catching up -----------------------------------------------------------
 
-/// What a call needs: the settings plus the key from the keychain.
+/// What a call needs for the connection in use: its settings plus its key from the keychain.
 pub fn config_for(ai: &AiSettings) -> Result<Config> {
-    let api_key = keys::get(&ai.preset)?;
-    if api_key.is_none() && ai.kind != llm::ProviderKind::OpenAi {
+    let connection = ai.active_connection().ok_or_else(|| LlmError::Auth("no AI connection chosen".into()))?;
+    connection_config(connection, None)
+}
+
+/// The same for any connection, e.g. one being added whose key isn't saved yet: `key` stands in
+/// for the keychain's when given.
+pub fn connection_config(connection: &AiConnection, key: Option<&str>) -> Result<Config> {
+    let api_key = match key.map(str::trim).filter(|k| !k.is_empty()) {
+        Some(key) => Some(key.to_string()),
+        None => keys::get(&connection.id)?,
+    };
+    if api_key.is_none() && connection.kind != llm::ProviderKind::OpenAi {
         return Err(LlmError::Auth("no key set".into()).into());
     }
-    Ok(Config { kind: ai.kind, base_url: ai.base_url.clone(), model: ai.model.clone(), api_key })
+    Ok(Config { kind: connection.kind, base_url: connection.base_url.clone(), model: connection.model.clone(), api_key })
 }
 
 /// Called when the AI settings change: remembers when AI was switched on, wakes a paused queue,
@@ -424,8 +434,8 @@ pub fn requeue_missed(state: &AppState) {
 }
 
 /// Asks the provider for a tiny answer, to check the settings and key work together.
-pub fn test_connection(ai: &AiSettings) -> Result<()> {
-    Ok(llm::test(&config_for(ai)?)?)
+pub fn test_connection(connection: &AiConnection, key: Option<&str>) -> Result<()> {
+    Ok(llm::test(&connection_config(connection, key)?)?)
 }
 
 #[cfg(test)]

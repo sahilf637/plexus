@@ -1,7 +1,7 @@
 // The only module that talks to the Rust side. Outside Tauri (`npm run dev:ui`) every call
 // goes to an in-memory mock instead, so the UI can be built in a plain browser.
 
-import type { AiKeyStatus, CaptureResult, Deleted, EnrichStatus, HotkeyStatus, ModelInfo, Item, ItemDetail, MapData, Position, Preview, Settings } from './types'
+import type { AiConnection, AiKeyStatus, CaptureResult, Deleted, EnrichStatus, HotkeyStatus, ModelInfo, Item, ItemDetail, MapData, Position, Preview, Settings } from './types'
 import * as mock from './mock/backend'
 
 export const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
@@ -25,13 +25,15 @@ export async function on<T>(event: string, handler: (payload: T) => void): Promi
 
 export const getSettings = () => call<Settings>('get_settings')
 export const setSettings = (settings: Settings) => call<Settings>('set_settings', { settings })
-export const aiKeyStatus = () => call<AiKeyStatus>('ai_key_status')
-/** Stores the key for the selected provider in the system keychain (empty removes it). */
-export const setAiKey = (key: string) => call<void>('set_ai_key', { key })
-/** A tiny request with the saved settings and key; rejects with why it failed. */
-export const testAi = () => call<void>('test_ai')
-/** The chat models the selected provider offers (needs the saved key, unless it's a local server). */
-export const listAiModels = () => call<ModelInfo[]>('list_ai_models')
+export const aiKeyStatus = (id: string) => call<AiKeyStatus>('ai_key_status', { id })
+/** Stores a connection's key in the system keychain (empty removes it). */
+export const setAiKey = (id: string, key: string) => call<void>('set_ai_key', { id, key })
+/** A tiny request with a connection, before or after it's saved; `key` is the one just typed (else
+ * the saved one is used). Rejects with why it failed. */
+export const testAi = (connection: AiConnection, key?: string) => call<void>('test_ai', { connection, key })
+/** The chat models a connection's provider offers (needs its key, unless it's a local server). */
+export const listAiModels = (connection: AiConnection, key?: string) =>
+  call<ModelInfo[]>('list_ai_models', { connection, key })
 export const enrichStatus = () => call<EnrichStatus>('enrich_status')
 /** Tries again after a pause (a wrong key fixed, a limit raised). */
 export const enrichRetry = () => call<void>('enrich_retry')

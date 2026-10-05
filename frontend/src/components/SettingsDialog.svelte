@@ -11,8 +11,10 @@
     testAi,
   } from '../lib/api'
   import { aiPresets } from '../lib/kinds'
+  import { navigation, setNavigation } from '../lib/navigation.svelte'
   import Icon, { type IconName } from './Icon.svelte'
-  import type { AiKeyStatus, AiSettings, HotkeyStatus, ModelInfo, Settings } from '../lib/types'
+  import Select, { type Option } from './Select.svelte'
+  import type { AiConnection, AiKeyStatus, AiSettings, HotkeyStatus, ModelInfo, Settings } from '../lib/types'
 
   type Section = 'general' | 'capture' | 'ai' | 'library'
 
@@ -33,21 +35,47 @@
   let hotkeyDraft = $state('')
   let dialog = $state<HTMLDialogElement>()
 
-  // AI: the key is typed here but only ever stored in the system keychain.
-  let keyStatus = $state<AiKeyStatus>({ hasKey: false, error: null })
+  // AI providers. A provider is added with one form and then only chosen or removed; its key is
+  // typed in the form but only ever stored in the system keychain.
+  let keyStatuses = $state<Record<string, AiKeyStatus>>({})
+  /** The provider form is showing: to add one, or (with `editing`) to change one. */
+  let adding = $state(false)
+  /** The provider being changed; its kind, address and key slot stay as they were. */
+  let editing = $state<AiConnection | null>(null)
+  let removing = $state<string | null>(null)
+
+  // The form's fields.
+  let presetId = $state(aiPresets[0].id)
   let keyDraft = $state('')
-  let test = $state<{ state: 'idle' | 'running' | 'ok' | 'failed'; message: string }>({ state: 'idle', message: '' })
-  let models = $state<ModelInfo[]>([])
-  let modelsState = $state<{ state: 'idle' | 'loading' | 'failed'; message: string }>({ state: 'idle', message: '' })
-  /** The model box is a text field: the user chose "Other…". */
+  let model = $state('')
   let typingModel = $state(false)
-  const preset = $derived(aiPresets.find((p) => p.id === settings?.ai.preset) ?? aiPresets[aiPresets.length - 1])
-  /** The provider's models, plus the one in use and the preset's own, so the box is never empty. */
-  const modelOptions = $derived.by(() => {
-    const ids = new Set(models.map((m) => m.id))
-    const extra = [settings?.ai.model, preset.model].filter((id): id is string => !!id && !ids.has(id))
-    return [...new Set(extra), ...ids]
+  let nameDraft = $state('')
+  let models = $state<ModelInfo[]>([])
+  let modelsState = $state<'idle' | 'loading' | 'failed'>('idle')
+  let modelsError = $state('')
+  let submit = $state<{ state: 'idle' | 'checking' | 'failed'; message: string }>({ state: 'idle', message: '' })
+
+  const connections = $derived(settings?.ai.connections ?? [])
+  const preset = $derived(aiPresets.find((p) => p.id === presetId) ?? aiPresets[0])
+  const autoName = $derived.by(() => {
+    const taken = new Set(connections.map((c) => c.name))
+    let name = preset.label
+    for (let n = 2; taken.has(name); n++) name = `${preset.label} ${n}`
+    return name
   })
+  const modelIds = $derived.by(() => {
+    const ids = new Set(models.map((m) => m.id))
+    const extra = [preset.model].filter((id) => !!id && !ids.has(id))
+    return [...extra, ...ids]
+  })
+  const modelOptions = $derived<Option[]>([
+    ...modelIds.map((id) => ({ value: id, label: id, hint: models.find((m) => m.id === id)?.vision ? 'sees images' : undefined })),
+    { value: OTHER, label: 'Other…' },
+  ])
+  const providerOptions: Option[] = aiPresets.map((p) => ({ value: p.id, label: p.label }))
+  /** The key already saved for the provider being edited can stay as it is. */
+  const keyKept = $derived(!!editing && !!keyStatuses[editing.id]?.hasKey)
+  const canAdd = $derived(!!model.trim() && (preset.local || keyKept || !!keyDraft.trim()) && submit.state !== 'checking')
 
   onMount(async () => {
     dialog?.showModal()
@@ -55,8 +83,7 @@
     dialog?.focus()
     ;[settings, status] = await Promise.all([getSettings(), hotkeyStatus()])
     hotkeyDraft = settings.hotkey
-    keyStatus = await aiKeyStatus()
-    if (settings.ai.enabled) loadModels()
+    await loadKeyStatuses()
   })
 
   async function update(patch: Partial<Settings>) {
@@ -72,71 +99,154 @@
     return text.charAt(0).toUpperCase() + text.slice(1)
   }
 
+  async function loadKeyStatuses() {
+    const next: Record<string, AiKeyStatus> = {}
+    await Promise.all(connections.map(async (c) => (next[c.id] = await aiKeyStatus(c.id))))
+    keyStatuses = next
+  }
+
   async function updateAi(patch: Partial<AiSettings>) {
     if (!settings) return
-    test = { state: 'idle', message: '' }
     await update({ ai: { ...settings.ai, ...patch } })
   }
 
-  async function loadModels() {
-    modelsState = { state: 'loading', message: '' }
-    try {
-      models = await listAiModels()
-      modelsState = { state: 'idle', message: '' }
-    } catch (e) {
-      models = []
-      modelsState = { state: 'failed', message: describe(e) }
-    }
+  // --- the list ---------------------------------------------------------------------------
+
+  function summary(c: AiConnection): string {
+    return [aiPresets.find((p) => p.id === c.preset)?.label ?? c.preset, c.model].filter(Boolean).join(' · ')
+  }
+
+  /** A provider without a key can't make requests (unless it's a server on this computer). */
+  function needsKey(c: AiConnection): boolean {
+    return !aiPresets.find((p) => p.id === c.preset)?.local && !keyStatuses[c.id]?.hasKey
   }
 
   async function toggleAi(enabled: boolean) {
     await updateAi({ enabled })
-    if (enabled) loadModels()
+    // Nothing to use yet: go straight to adding one.
+    if (enabled && !connections.length) startAdding()
   }
 
-  async function pickPreset(id: string) {
-    const next = aiPresets.find((p) => p.id === id)
-    if (!next) return
+  async function remove(id: string) {
+    if (!settings) return
+    const rest = connections.filter((c) => c.id !== id)
+    const active = settings.ai.active === id ? (rest[0]?.id ?? '') : settings.ai.active
+    removing = null
+    await updateAi({ connections: rest, active })
+  }
+
+  // --- the form ---------------------------------------------------------------------------
+
+  function startEditing(c: AiConnection) {
+    presetId = aiPresets.some((p) => p.id === c.preset) ? c.preset : aiPresets[0].id
     keyDraft = ''
+    nameDraft = c.name
     typingModel = false
+    model = c.model
     models = []
-    await updateAi({ preset: next.id, kind: next.kind, baseUrl: next.baseUrl, model: next.model, vision: next.vision })
-    keyStatus = await aiKeyStatus()
+    modelsState = 'idle'
+    submit = { state: 'idle', message: '' }
+    editing = c
+    adding = true
     loadModels()
   }
 
-  async function pickModel(id: string) {
+  function startAdding() {
+    editing = null
+    presetId = aiPresets[0].id
+    keyDraft = ''
+    nameDraft = ''
+    typingModel = false
+    model = aiPresets[0].model
+    models = []
+    submit = { state: 'idle', message: '' }
+    adding = true
+    loadModels()
+  }
+
+  /** What the form describes, as a connection (its id is final: the key is stored under it). */
+  let draftId = $state(crypto.randomUUID())
+  function draft(): AiConnection {
+    return {
+      id: editing?.id ?? draftId,
+      name: nameDraft.trim() || (editing?.name ?? autoName),
+      preset: editing?.preset ?? preset.id,
+      kind: editing?.kind ?? preset.kind,
+      baseUrl: editing?.baseUrl ?? preset.baseUrl,
+      model: model.trim(),
+      vision: models.find((m) => m.id === model)?.vision ?? (editing && model === editing.model ? editing.vision : preset.vision),
+    }
+  }
+
+  async function loadModels() {
+    // Needs a key first (typed, or saved when editing), unless it's a server on this computer.
+    if (!preset.local && !keyKept && !keyDraft.trim()) {
+      models = []
+      modelsState = 'idle'
+      return
+    }
+    const wanted = preset.id
+    modelsState = 'loading'
+    try {
+      const list = await listAiModels(draft(), keyDraft.trim() || undefined)
+      if (!adding || preset.id !== wanted) return
+      models = list
+      modelsState = 'idle'
+      // The preset's own pick if the provider has it, else its first model.
+      if (!typingModel && list.length && !list.some((m) => m.id === model)) model = list[0].id
+    } catch (e) {
+      if (preset.id !== wanted) return
+      models = []
+      modelsState = 'failed'
+      modelsError = describe(e)
+    }
+  }
+
+  function pickPreset(id: string) {
+    const next = aiPresets.find((p) => p.id === id)
+    if (!next) return
+    presetId = id
+    keyDraft = ''
+    typingModel = false
+    model = next.model
+    models = []
+    modelsState = 'idle'
+    loadModels()
+  }
+
+  function pickModel(id: string) {
     if (id === OTHER) {
       typingModel = true
       return
     }
     typingModel = false
-    // The provider says whether it reads images; follow that.
-    const known = models.find((m) => m.id === id)
-    await updateAi({ model: id, ...(known ? { vision: known.vision } : {}) })
+    model = id
   }
 
-  async function saveKey() {
-    if (!keyDraft.trim()) return
+  /** Checks the provider with what was typed (or its saved key), and only then keeps it. */
+  async function add() {
+    if (!settings || !canAdd) return
+    const connection = draft()
+    submit = { state: 'checking', message: '' }
     try {
-      await setAiKey(keyDraft)
-      keyDraft = ''
+      await testAi(connection, keyDraft.trim() || undefined)
     } catch (e) {
-      test = { state: 'failed', message: describe(e) }
+      submit = { state: 'failed', message: describe(e) }
+      return
     }
-    keyStatus = await aiKeyStatus()
-    loadModels()
-  }
-
-  async function runTest() {
-    await saveKey()
-    test = { state: 'running', message: '' }
     try {
-      await testAi()
-      test = { state: 'ok', message: 'Connected' }
+      if (keyDraft.trim()) await setAiKey(connection.id, keyDraft)
+      const next = editing ? connections.map((c) => (c.id === connection.id ? connection : c)) : [...connections, connection]
+      await updateAi({ connections: next, active: settings.ai.active || connection.id })
     } catch (e) {
-      test = { state: 'failed', message: describe(e) }
+      submit = { state: 'failed', message: describe(e) }
+      return
     }
+    keyDraft = ''
+    if (!editing) draftId = crypto.randomUUID()
+    editing = null
+    adding = false
+    await loadKeyStatuses()
   }
 </script>
 
@@ -153,7 +263,11 @@
 
     <div class="pane">
       <header>
-        <h3>{SECTIONS.find((s) => s.id === section)?.label}</h3>
+        {#if section === 'ai' && adding}
+          <button class="crumb" onclick={() => (adding = false)}><Icon name="back" size={16} />{editing ? 'Edit provider' : 'Add provider'}</button>
+        {:else}
+          <h3>{SECTIONS.find((s) => s.id === section)?.label}</h3>
+        {/if}
         <button class="icon-btn" onclick={() => dialog?.close()} title="Close (Esc)" aria-label="Close"><Icon name="close" /></button>
       </header>
 
@@ -193,7 +307,17 @@
                   <button role="radio" aria-checked={settings.hotkeyAction === 'saveClipboard'} class:on={settings.hotkeyAction === 'saveClipboard'} onclick={() => update({ hotkeyAction: 'saveClipboard' })}>Save clipboard</button>
                 </div>
               </div>
+            </div>
 
+            <h4>Map</h4>
+            <div class="group">
+              <label class="item">
+                <div class="label">
+                  <span>Reverse zoom direction</span>
+                  <span class="desc">On: slide two fingers up to zoom in. Off: like a mouse wheel</span>
+                </div>
+                <input type="checkbox" class="switch" checked={navigation.invertZoom} onchange={(e) => setNavigation({ invertZoom: e.currentTarget.checked })} />
+              </label>
             </div>
 
             <h4>Startup</h4>
@@ -228,7 +352,73 @@
                 <input type="checkbox" class="switch" checked={settings.watchClipboard} onchange={(e) => update({ watchClipboard: e.currentTarget.checked })} />
               </label>
             </div>
+          {:else if section === 'ai' && adding}
+            <!-- Add a provider -->
+            <div class="group">
+              <div class="item">
+                <div class="label"><span>Provider</span></div>
+                <Select value={presetId} options={providerOptions} onchange={pickPreset} label="Provider" width={240} disabled={!!editing} />
+              </div>
+
+              {#if !preset.local}
+                <div class="item">
+                  <div class="label">
+                    <span>Key</span>
+                    <span class="desc">{keyKept ? 'Saved in your keychain. Paste a new one to replace it' : 'Kept in your system keychain, never in a file'}</span>
+                  </div>
+                  <!-- svelte-ignore a11y_autofocus -->
+                  <input
+                    class="input field"
+                    class:saved={keyKept && !keyDraft}
+                    type="password"
+                    autocomplete="off"
+                    autofocus
+                    bind:value={keyDraft}
+                    placeholder={keyKept ? '••••••••••••••••' : 'Paste your key'}
+                    aria-label="API key"
+                    onchange={loadModels}
+                  />
+                </div>
+              {/if}
+
+              <div class="item">
+                <div class="label">
+                  <span>Model</span>
+                  <span class="desc">
+                    {#if modelsState === 'loading'}Loading the list…
+                    {:else if modelsState === 'failed'}<span class="error" title={modelsError}>Couldn't load the list</span>
+                    {:else if models.length}{models.length} available
+                    {:else if !preset.local && !keyKept && !keyDraft.trim()}Paste your key to see the list{/if}
+                  </span>
+                </div>
+                {#if typingModel}
+                  <!-- svelte-ignore a11y_autofocus -->
+                  <input class="input field" autofocus bind:value={model} placeholder="model name" aria-label="Model name" />
+                {:else}
+                  <Select value={model} options={modelOptions} onchange={pickModel} label="Model" width={240} placeholder="Choose a model" />
+                {/if}
+              </div>
+
+              <div class="item">
+                <div class="label">
+                  <span>Name</span>
+                  <span class="desc">Optional, to tell providers apart</span>
+                </div>
+                <input class="input field" bind:value={nameDraft} placeholder={editing?.name ?? autoName} aria-label="Name" />
+              </div>
+            </div>
+
+            {#if submit.state === 'failed'}
+              <p class="problem" role="alert">{submit.message}</p>
+            {/if}
+            <div class="actions">
+              <button class="btn" onclick={() => (adding = false)}>Cancel</button>
+              <button class="btn primary" onclick={add} disabled={!canAdd}>
+                {submit.state === 'checking' ? 'Checking…' : editing ? 'Save' : 'Add provider'}
+              </button>
+            </div>
           {:else if section === 'ai'}
+            <!-- The providers -->
             <div class="group">
               <label class="item">
                 <div class="label">
@@ -240,94 +430,59 @@
             </div>
 
             {#if settings.ai.enabled}
-              <h4>Connection</h4>
-              <div class="group">
-                <div class="item">
-                  <div class="label"><span>Provider</span></div>
-                  <select class="input pick" value={settings.ai.preset} onchange={(e) => pickPreset(e.currentTarget.value)} aria-label="Provider">
-                    {#each aiPresets as p}<option value={p.id}>{p.label}</option>{/each}
-                  </select>
-                </div>
-
-                {#if !preset.local}
+              <h4>Providers</h4>
+              <div class="group" role="radiogroup" aria-label="Provider in use">
+                {#each connections as c (c.id)}
+                  <div class="item">
+                    <button
+                      class="row"
+                      role="radio"
+                      aria-checked={settings.ai.active === c.id}
+                      onclick={() => updateAi({ active: c.id })}
+                      title={settings.ai.active === c.id ? 'In use' : 'Use this one'}
+                    >
+                      <span class="radio" class:on={settings.ai.active === c.id} aria-hidden="true"></span>
+                      <span class="label">
+                        <span>{c.name}</span>
+                        <span class="desc">
+                          {summary(c)}{#if needsKey(c)}{' · '}<span class="warn">needs a key</span>{/if}
+                        </span>
+                      </span>
+                    </button>
+                    {#if removing === c.id}
+                      <button class="btn" onclick={() => (removing = null)}>Keep</button>
+                      <button class="btn danger" onclick={() => remove(c.id)}>Remove</button>
+                    {:else}
+                      {#if settings.ai.active === c.id}<span class="tag">In use</span>{/if}
+                      <button class="icon-btn" onclick={() => startEditing(c)} title="Edit" aria-label={`Edit ${c.name}`}>
+                        <Icon name="edit" size={15} />
+                      </button>
+                      <button class="icon-btn danger" onclick={() => (removing = c.id)} title="Remove (also deletes its key)" aria-label={`Remove ${c.name}`}>
+                        <Icon name="trash" size={15} />
+                      </button>
+                    {/if}
+                  </div>
+                {:else}
                   <div class="item">
                     <div class="label">
-                      <span>Key</span>
-                      <span class="desc">
-                        {#if keyStatus.error}<span class="error">{keyStatus.error}</span>
-                        {:else if keyStatus.hasKey}Saved in your system keychain
-                        {:else}Kept in your system keychain, never in a file{/if}
-                      </span>
+                      <span>No providers yet</span>
+                      <span class="desc">Add one to start using AI</span>
                     </div>
-                    <input
-                      class="input key"
-                      type="password"
-                      autocomplete="off"
-                      bind:value={keyDraft}
-                      placeholder={keyStatus.hasKey ? '••••••••' : 'Paste your key'}
-                      aria-label="API key"
-                      onchange={saveKey}
-                    />
                   </div>
-                {/if}
-
-                {#if preset.custom}
-                  <div class="item">
-                    <div class="label"><span>Address</span></div>
-                    <input class="input wide" value={settings.ai.baseUrl} placeholder="http://localhost:11434/v1" aria-label="Address" onchange={(e) => { updateAi({ baseUrl: e.currentTarget.value.trim() }).then(loadModels) }} />
-                  </div>
-                {/if}
-
-                <div class="item">
-                  <div class="label">
-                    <span>Model</span>
-                    <span class="desc">
-                      {#if modelsState.state === 'loading'}Loading the list…
-                      {:else if modelsState.state === 'failed'}<span class="error" title={modelsState.message}>Couldn't load the list</span>
-                      {:else if models.length}{models.length} available{/if}
-                    </span>
-                  </div>
-                  {#if typingModel}
-                    <!-- svelte-ignore a11y_autofocus -->
-                    <input class="input wide" autofocus value={settings.ai.model} placeholder="model name" aria-label="Model name" onchange={(e) => updateAi({ model: e.currentTarget.value.trim() })} />
-                  {:else}
-                    <select class="input wide" value={settings.ai.model} onchange={(e) => pickModel(e.currentTarget.value)} aria-label="Model">
-                      {#each modelOptions as id}
-                        <option value={id}>{id}{models.find((m) => m.id === id)?.vision ? ' · sees images' : ''}</option>
-                      {/each}
-                      <option value={OTHER}>Other…</option>
-                    </select>
-                  {/if}
-                  <button class="icon-btn" onclick={loadModels} title="Reload the list" aria-label="Reload the list" disabled={modelsState.state === 'loading'}>
-                    <Icon name="refresh" />
-                  </button>
-                </div>
-
-                <div class="item">
-                  <div class="label">
-                    <span class:ok={test.state === 'ok'} class:error={test.state === 'failed'} class="result">
-                      {test.state === 'running' ? 'Checking…' : test.message || 'Not checked yet'}
-                    </span>
-                  </div>
-                  <button class="btn" onclick={runTest} disabled={test.state === 'running' || !settings.ai.model}>Test connection</button>
-                </div>
+                {/each}
+              </div>
+              <div class="actions start">
+                <button class="btn" onclick={startAdding}><Icon name="plus" size={15} />Add provider</button>
               </div>
 
               <h4>Options</h4>
               <div class="group">
-                <label class="item">
-                  <div class="label">
-                    <span>Describe images</span>
-                    <span class="desc">Needs a model that can see pictures</span>
-                  </div>
-                  <input type="checkbox" class="switch" checked={settings.ai.vision} onchange={(e) => updateAi({ vision: e.currentTarget.checked })} />
-                </label>
-
                 <div class="item" title="The most AI requests per day, to keep costs predictable. 0 means no limit.">
                   <div class="label"><span>Daily limit</span></div>
                   <input class="input num" type="number" min="0" step="50" value={settings.ai.dailyLimit} aria-label="Daily limit" onchange={(e) => updateAi({ dailyLimit: Math.max(0, Math.floor(Number(e.currentTarget.value) || 0)) })} />
                 </div>
               </div>
+              <p class="note">Tip: use a key with a spend limit, and only the permissions Plexus needs.</p>
             {/if}
           {:else}
             <h4>Folder</h4>
@@ -424,13 +579,32 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 12px 12px 4px 22px;
+    min-height: 46px;
+    padding: 8px 12px 4px 22px;
   }
 
   h3 {
     margin: 0;
     font-size: 16px;
     font-weight: 650;
+  }
+
+  /* "‹ Add provider": back to the list. */
+  .crumb {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: -8px;
+    padding: 4px 8px;
+    border: none;
+    border-radius: 8px;
+    background: none;
+    font-size: 16px;
+    font-weight: 650;
+  }
+
+  .crumb:hover {
+    background: var(--hover);
   }
 
   .body {
@@ -457,17 +631,13 @@
     background: var(--group);
   }
 
-
   .item {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 10px;
-    min-height: 52px;
-    padding: 8px 14px;
-  }
-
-  .item {
-    position: relative;
+    min-height: 56px;
+    padding: 10px 14px;
   }
 
   /* A faint hairline, inset from the edges, between rows. */
@@ -508,28 +678,87 @@
     color: var(--danger);
   }
 
+  .warn {
+    color: var(--warning);
+  }
+
+  /* A provider in the list: the name area chooses it. */
+  /* A saved key is never shown, only that there is one: dots in the normal text colour. */
+  .input.saved::placeholder {
+    color: var(--text);
+    opacity: 0.75;
+    letter-spacing: 0.15em;
+  }
+
+  .row {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0;
+    border: none;
+    background: none;
+    text-align: left;
+  }
+
+  .radio {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    box-shadow: inset 0 0 0 2px var(--fill-hover);
+    transition: box-shadow 120ms;
+  }
+
+  .radio.on {
+    box-shadow: inset 0 0 0 5px var(--accent);
+  }
+
+  .tag {
+    padding: 2px 9px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  .actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 14px;
+  }
+
+  .actions.start {
+    justify-content: flex-start;
+  }
+
+  .problem {
+    margin: 12px 2px 0;
+    color: var(--danger);
+    overflow-wrap: anywhere;
+  }
+
+  .note {
+    margin: 10px 2px 0;
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+
   .key {
     width: 170px;
   }
 
-  .pick {
-    width: 200px;
-  }
-
-  .wide {
+  .field {
     width: 240px;
   }
 
   .num {
-    width: 90px;
-  }
-
-  .result.ok {
-    color: var(--kind-code);
-  }
-
-  .result {
-    overflow-wrap: anywhere;
+    width: 96px;
+    text-align: right;
   }
 
   @media (max-width: 560px) {

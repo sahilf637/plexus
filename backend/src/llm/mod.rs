@@ -102,6 +102,7 @@ pub fn test(config: &Config) -> Result<(), LlmError> {
 
 // --- shared plumbing ---------------------------------------------------------------------
 
+#[derive(Debug)]
 pub(crate) struct Reply {
     pub status: u16,
     pub body: String,
@@ -117,6 +118,13 @@ pub(crate) fn get(url: &str, headers: &[(&str, &str)]) -> Result<Reply, LlmError
 }
 
 fn send(url: &str, headers: &[(&str, &str)], body: Option<&Value>) -> Result<Reply, LlmError> {
+    // A key is never sent in the clear over the internet.
+    let has_key = headers.iter().any(|(name, value)| !value.is_empty() && is_credential(name));
+    if has_key && url.starts_with("http://") && !is_private_host(url) {
+        return Err(LlmError::Bad(
+            "won't send your key over an unencrypted connection to another computer; use an https:// address".into(),
+        ));
+    }
     static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
         // Status errors are read from the body, which says what's wrong.
         ureq::Agent::config_builder().timeout_global(Some(TIMEOUT)).http_status_as_error(false).build().into()
@@ -147,6 +155,30 @@ fn send(url: &str, headers: &[(&str, &str)], body: Option<&Value>) -> Result<Rep
         .map(Duration::from_secs);
     let body = response.body_mut().read_to_string().map_err(|e| LlmError::Unavailable(e.to_string()))?;
     Ok(Reply { status, body, retry_after })
+}
+
+fn is_credential(header: &str) -> bool {
+    matches!(header.to_ascii_lowercase().as_str(), "authorization" | "x-api-key" | "x-goog-api-key")
+}
+
+/// Whether the address is this computer or one on a home or office network, where plain HTTP
+/// (a local Ollama or LM Studio) is normal.
+pub(crate) fn is_private_host(url: &str) -> bool {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or(""),
+        None => authority.split(':').next().unwrap_or(""),
+    }
+    .to_ascii_lowercase();
+    if host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local") || host == "::1" {
+        return true;
+    }
+    match host.parse::<std::net::Ipv4Addr>() {
+        Ok(ip) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
+        Err(_) => false,
+    }
 }
 
 /// Turns a non-2xx reply into the error the caller should act on.
@@ -200,6 +232,26 @@ mod tests {
         assert_eq!(json_from_text("Sure! {\"a\": {\"b\": 2}} Hope that helps").unwrap(), json!({"a": {"b": 2}}));
         assert!(matches!(json_from_text("no json here"), Err(LlmError::Bad(_))));
         assert!(matches!(json_from_text("{broken"), Err(LlmError::Bad(_))));
+    }
+
+    #[test]
+    fn plain_http_is_only_for_this_computer_and_home_networks() {
+        for local in [
+            "http://localhost:11434/v1",
+            "http://127.0.0.1:1234/v1",
+            "http://[::1]:8080/v1",
+            "http://192.168.1.20:11434",
+            "http://10.0.0.5/v1",
+            "http://172.16.4.2/v1",
+            "http://studio.local:1234/v1",
+        ] {
+            assert!(is_private_host(local), "{local}");
+        }
+        for remote in ["http://api.example.com/v1", "http://8.8.8.8/v1", "http://172.32.0.1/v1", "http://localhost.evil.com/v1"] {
+            assert!(!is_private_host(remote), "{remote}");
+        }
+        let error = post("http://api.example.com/v1", &[("authorization", "Bearer k")], &json!({})).unwrap_err();
+        assert!(matches!(error, LlmError::Bad(m) if m.contains("unencrypted")));
     }
 
     #[test]

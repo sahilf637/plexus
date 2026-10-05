@@ -9,6 +9,7 @@ import { animateNodes } from 'sigma/utils'
 import type { EdgeDisplayData, NodeDisplayData, PartialButFor } from 'sigma/types'
 import type { Settings } from 'sigma/settings'
 import { tierShown } from '../kinds'
+import type { Navigation } from '../navigation.svelte'
 import { forceDuration, forceSettings, groupedStart, rescaled, sunflower } from './layout'
 import type { Edge, Item, MapData, Position, Tier } from '../types'
 
@@ -81,6 +82,25 @@ export function spiralPosition(index: number): { x: number; y: number } {
   return sunflower(index, SPIRAL_SPACING)
 }
 
+export type PanDirection = 'left' | 'right' | 'up' | 'down'
+
+/** How far the view glides per second while an arrow key is held, in screens (Shift: faster). */
+const PAN_SPEED = 0.9
+const PAN_SPEED_FAST = 2.4
+
+const MIN_RATIO = 0.02
+/** Ratio 1 shows the whole map; zooming out stops a little past that, so the view can't drift
+ * off into empty space or onto far-flung loners. */
+const MAX_RATIO = 2.5
+/** Zoom per pixel of scrolling: a mouse-wheel notch (about 100) zooms by roughly 1.4 times, a
+ * trackpad's many small events add up to the same; pinching (sent with Ctrl held) is finer. */
+const WHEEL_SPEED = 0.0034
+const PINCH_SPEED = 0.01
+/** One scroll event never counts for more than this many pixels, so a burst can't leap. */
+const MAX_PIXELS = 60
+/** How quickly the view catches up with the zoom asked for (time to cover ~63% of the gap). */
+const ZOOM_EASE_MS = 70
+
 export class MapController {
   private graph = new Graph<NodeAttributes>({ type: 'undirected' })
   private sigma: Sigma
@@ -91,6 +111,16 @@ export class MapController {
   private burst = 0
   private layout: FA2Layout | undefined
   private burstTimer: ReturnType<typeof setTimeout> | undefined
+  private container: HTMLElement
+  private navigation: Navigation = { invertZoom: true }
+  /** The zoom scrolling has asked for; the view eases towards it a frame at a time. */
+  private zoomAim: { ratio: number; cursor: { x: number; y: number } } | null = null
+  private zoomFrame = 0
+  private zoomLast = 0
+  private panHeld = new Set<PanDirection>()
+  private panFast = false
+  private panFrame = 0
+  private panLast = 0
   private selected: string | null = null
   /** Items picked together (Shift-click), e.g. to delete them in one go. */
   private marked = new Set<string>()
@@ -102,6 +132,7 @@ export class MapController {
 
   constructor(container: HTMLElement, events: MapEvents) {
     this.events = events
+    this.container = container
     // Sigma's types don't carry our node attributes through; the reducers cast back.
     this.sigma = new Sigma(this.graph as unknown as Graph, container, {
       defaultEdgeType: 'curve',
@@ -117,8 +148,8 @@ export class MapController {
       labelGridCellSize: 110,
       zIndex: true,
       allowInvalidContainer: true,
-      minCameraRatio: 0.02,
-      maxCameraRatio: 20,
+      minCameraRatio: MIN_RATIO,
+      maxCameraRatio: MAX_RATIO,
       nodeReducer: (node, data) => this.reduceNode(node, data as unknown as NodeAttributes),
       edgeReducer: (edge, data) => this.reduceEdge(edge, data as unknown as EdgeDisplayData),
     })
@@ -143,6 +174,62 @@ export class MapController {
     this.sigma.on('rightClickStage', ({ event }) => event.original.preventDefault())
     this.themeQuery.addEventListener('change', this.onThemeChange)
     this.resizeObserver.observe(container)
+    // Captured, so it runs before Sigma's own wheel zoom, which it replaces.
+    container.addEventListener('wheel', this.onwheel, { passive: false, capture: true })
+  }
+
+  setNavigation(navigation: Navigation) {
+    this.navigation = navigation
+  }
+
+  private onwheel = (event: WheelEvent) => {
+    event.preventDefault()
+    event.stopPropagation()
+    const camera = this.sigma.getCamera()
+    const rect = this.container.getBoundingClientRect()
+    const cursor = { x: event.clientX - rect.left, y: event.clientY - rect.top }
+    const lines = event.deltaMode === 1 ? 33 : 1
+    const pixels = Math.max(-MAX_PIXELS, Math.min(MAX_PIXELS, event.deltaY * lines))
+    // Scrolling up zooms in, like a map; the setting flips it.
+    const direction = this.navigation.invertZoom ? 1 : -1
+    const speed = event.ctrlKey ? PINCH_SPEED : WHEEL_SPEED
+    if (!this.zoomFrame) {
+      // A glide to a selected item may still be running; the scroll takes over from here.
+      void camera.animate(camera.getState(), { duration: 1 })
+      this.zoomAim = { ratio: camera.ratio, cursor }
+    }
+    const aim = this.zoomAim!
+    aim.cursor = cursor
+    aim.ratio = Math.min(MAX_RATIO, Math.max(MIN_RATIO, aim.ratio / Math.exp(pixels * speed * direction)))
+    if (!this.zoomFrame) {
+      this.zoomLast = performance.now()
+      this.zoomFrame = requestAnimationFrame(this.zoomStep)
+    }
+  }
+
+  /** Scrolling only sets where the zoom should end up; each frame the view covers part of the
+   * way there. That stays smooth however fast or in what sizes the scroll events arrive. */
+  private zoomStep = (now: number) => {
+    this.zoomFrame = 0
+    const aim = this.zoomAim
+    if (!aim) return
+    const camera = this.sigma.getCamera()
+    const gap = Math.log(aim.ratio / camera.ratio)
+    const done = Math.abs(gap) < 0.002
+    const ease = 1 - Math.exp(-Math.min(now - this.zoomLast, 50) / ZOOM_EASE_MS)
+    this.zoomLast = now
+    const ratio = done ? aim.ratio : camera.ratio * Math.exp(gap * ease)
+    // The cursor's distance from the view's centre grows in proportion to the ratio, so moving
+    // the centre by that distance times the ratio's change keeps the point under the cursor.
+    const under = this.sigma.viewportToFramedGraph(aim.cursor)
+    const k = camera.ratio - ratio
+    camera.setState({
+      x: camera.x + ((under.x - camera.x) / camera.ratio) * k,
+      y: camera.y + ((under.y - camera.y) / camera.ratio) * k,
+      ratio,
+    })
+    if (done) this.zoomAim = null
+    else this.zoomFrame = requestAnimationFrame(this.zoomStep)
   }
 
   /** Replaces everything on the map. */
@@ -351,7 +438,62 @@ export class MapController {
     return this.graph.mapNodes((id, attrs) => ({ id, x: attrs.x, y: attrs.y }))
   }
 
+  /** Arrow keys: the view glides in that direction for as long as the key is held. */
+  panKey(direction: PanDirection, down: boolean, fast = false) {
+    if (!down) {
+      this.panHeld.delete(direction)
+      return
+    }
+    this.panHeld.add(direction)
+    this.panFast = fast
+    if (this.panFrame) return
+    // A glide to a selected item may still be running; the keys take over from here.
+    const camera = this.sigma.getCamera()
+    void camera.animate(camera.getState(), { duration: 1 })
+    this.panLast = performance.now()
+    this.panFrame = requestAnimationFrame(this.panStep)
+  }
+
+  /** Lets go of every arrow key (the window lost focus, so no key-up will come). */
+  stopPan() {
+    this.panHeld.clear()
+  }
+
+  private panStep = (now: number) => {
+    this.panFrame = 0
+    if (!this.panHeld.size) return
+    const seconds = Math.min(now - this.panLast, 50) / 1000
+    this.panLast = now
+    const step = (this.panFast ? PAN_SPEED_FAST : PAN_SPEED) * seconds
+    const { width, height } = this.sigma.getDimensions()
+    const dx = (this.panHeld.has('right') ? 1 : 0) - (this.panHeld.has('left') ? 1 : 0)
+    const dy = (this.panHeld.has('down') ? 1 : 0) - (this.panHeld.has('up') ? 1 : 0)
+    const to = this.sigma.viewportToFramedGraph({ x: width / 2 + dx * width * step, y: height / 2 + dy * height * step })
+    this.sigma.getCamera().setState({ x: to.x, y: to.y })
+    this.panFrame = requestAnimationFrame(this.panStep)
+  }
+
+  /** Zooms in (`true`) or out about the middle of the view. */
+  zoom(inwards: boolean) {
+    const camera = this.sigma.getCamera()
+    if (inwards) void camera.animatedZoom({ duration: 200 })
+    else void camera.animatedUnzoom({ duration: 200 })
+  }
+
+  /** Shows the whole map. */
+  showAll() {
+    void this.sigma.getCamera().animatedReset({ duration: 300 })
+  }
+
+  /** Brings the selected item back to the middle of the view. */
+  showSelected() {
+    if (this.selected) this.focus(this.selected, true)
+  }
+
   destroy() {
+    cancelAnimationFrame(this.panFrame)
+    cancelAnimationFrame(this.zoomFrame)
+    this.container.removeEventListener('wheel', this.onwheel, { capture: true })
     this.themeQuery.removeEventListener('change', this.onThemeChange)
     this.resizeObserver.disconnect()
     clearTimeout(this.burstTimer)

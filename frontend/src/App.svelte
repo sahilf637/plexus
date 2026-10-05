@@ -22,6 +22,7 @@
   import EmptyState from './components/EmptyState.svelte'
   import ItemPanel from './components/ItemPanel.svelte'
   import MapView from './components/Map.svelte'
+  import type { PanDirection } from './lib/graph/map'
   import SettingsDialog from './components/SettingsDialog.svelte'
   import Toasts from './components/Toasts.svelte'
 
@@ -283,6 +284,54 @@
       event.preventDefault()
       searchInput?.focus()
     }
+    navigate(event)
+  }
+
+  const PAN_KEYS: Record<string, PanDirection> = {
+    ArrowLeft: 'left',
+    ArrowRight: 'right',
+    ArrowUp: 'up',
+    ArrowDown: 'down',
+  }
+
+  /** Keys that move around the map: arrows pan (Shift: faster), + and - zoom, 0 shows
+   * everything, F centres the selected item. They stay out of the way of text fields, the
+   * settings dialog and the side panel (which scrolls with the arrows). */
+  function mapKeys(event: KeyboardEvent): boolean {
+    if (!data || settingsOpen || event.ctrlKey || event.metaKey || event.altKey) return false
+    return !isTyping(event.target, 'input, textarea, select, dialog, aside, [role="listbox"]')
+  }
+
+  function navigate(event: KeyboardEvent) {
+    if (!mapKeys(event)) return
+    const direction = PAN_KEYS[event.key]
+    if (direction) {
+      event.preventDefault()
+      mapView?.panKey(direction, true, event.shiftKey)
+      return
+    }
+    switch (event.key) {
+      case '+':
+      case '=':
+        mapView?.zoom(true)
+        break
+      case '-':
+      case '_':
+        mapView?.zoom(false)
+        break
+      case '0':
+        mapView?.showAll()
+        break
+      case 'f':
+      case 'F':
+        mapView?.showSelected()
+        break
+    }
+  }
+
+  function onkeyup(event: KeyboardEvent) {
+    const direction = PAN_KEYS[event.key]
+    if (direction) mapView?.panKey(direction, false)
   }
 
   onMount(() => {
@@ -311,6 +360,8 @@
 <svelte:window
   {onpaste}
   {onkeydown}
+  {onkeyup}
+  onblur={() => mapView?.stopPan()}
   onpointerdown={(event) => {
     if (menu && !isTyping(event.target, '.menu')) menu = null
   }}

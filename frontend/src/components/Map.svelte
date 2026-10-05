@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { MapController } from '../lib/graph/map'
+  import { MapController, type PanDirection } from '../lib/graph/map'
+  import { navigation } from '../lib/navigation.svelte'
   import type { Edge, Item, MapData, Position, Tier } from '../lib/types'
 
   let {
@@ -46,6 +47,26 @@
     return map?.tidy() ?? Promise.resolve()
   }
 
+  export function panKey(direction: PanDirection, down: boolean, fast = false) {
+    map?.panKey(direction, down, fast)
+  }
+
+  export function stopPan() {
+    map?.stopPan()
+  }
+
+  export function zoom(inwards: boolean) {
+    map?.zoom(inwards)
+  }
+
+  export function showAll() {
+    map?.showAll()
+  }
+
+  export function showSelected() {
+    map?.showSelected()
+  }
+
   onMount(() => {
     map = new MapController(container!, {
       select: (id, additive = false) => onselect(id, additive),
@@ -70,6 +91,10 @@
 
   $effect(() => {
     map?.setLowestTier(lowestTier)
+  })
+
+  $effect(() => {
+    map?.setNavigation({ ...navigation })
   })
 </script>
 

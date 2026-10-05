@@ -5,6 +5,7 @@
     | 'close'
     | 'search'
     | 'trash'
+    | 'edit'
     | 'external'
     | 'file'
     | 'link'
@@ -18,6 +19,9 @@
     | 'sparkles'
     | 'folder'
     | 'refresh'
+    | 'chevron'
+    | 'back'
+    | 'chevron-down'
 </script>
 
 <script lang="ts">
@@ -25,6 +29,9 @@
   let { name, size = 16 }: { name: IconName; size?: number } = $props()
 
   const paths: Record<IconName, string> = {
+    chevron: 'M9 6l6 6-6 6',
+    'chevron-down': 'M6 9l6 6 6-6',
+    back: 'M15 6l-6 6 6 6',
     clipboard: 'M9 4h6v3H9zM7 5H6a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-1',
     sparkles:
       'M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM18 16l.8 2.2L21 19l-2.2.8L18 22l-.8-2.2L15 19l2.2-.8z',
@@ -35,6 +42,7 @@
       'M4 7h10M18 7h2M4 17h2M10 17h10M16 4v6M8 14v6',
     close: 'M6 6l12 12M18 6L6 18',
     search: 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4',
+    edit: 'M4 20h4L19 9l-4-4L4 16zM13 7l4 4',
     trash: 'M4 7h16M10 11v6M14 11v6M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12M9 7V4h6v3',
     external: 'M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5',
     file: 'M7 3h7l5 5v12a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM14 3v5h5',

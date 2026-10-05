@@ -73,8 +73,6 @@ export interface AiPreset {
   local?: boolean
   /** Whether the default model reads images. */
   vision: boolean
-  /** The address (and often the model) is the user's to fill in. */
-  custom?: boolean
 }
 
 export const aiPresets: AiPreset[] = [
@@ -83,7 +81,7 @@ export const aiPresets: AiPreset[] = [
   { id: 'gemini', label: 'Google Gemini', kind: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-2.5-flash', vision: true },
   { id: 'groq', label: 'Groq', kind: 'openai', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.3-70b-versatile', vision: false },
   { id: 'openrouter', label: 'OpenRouter', kind: 'openai', baseUrl: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4o-mini', vision: true },
-  { id: 'ollama', label: 'Ollama (this computer)', kind: 'openai', baseUrl: 'http://localhost:11434/v1', model: 'llama3.2', local: true, vision: false, custom: true },
-  { id: 'lmstudio', label: 'LM Studio (this computer)', kind: 'openai', baseUrl: 'http://localhost:1234/v1', model: '', local: true, vision: false, custom: true },
-  { id: 'custom', label: 'Other (OpenAI-compatible)', kind: 'openai', baseUrl: '', model: '', vision: false, custom: true },
+  { id: 'ollama', label: 'Ollama (this computer)', kind: 'openai', baseUrl: 'http://localhost:11434/v1', model: 'llama3.2', local: true, vision: false },
+  { id: 'lmstudio', label: 'LM Studio (this computer)', kind: 'openai', baseUrl: 'http://localhost:1234/v1', model: '', local: true, vision: false },
 ]
+

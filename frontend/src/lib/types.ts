@@ -20,19 +20,32 @@ export interface Settings {
 
 export type ProviderKind = 'openai' | 'anthropic' | 'gemini'
 
-/** The connected AI provider. Its key is not here: it lives in the system keychain. */
+/** The AI side of the settings. Keys are not here: each connection's key lives in the system
+ * keychain, under the connection's id. */
 export interface AiSettings {
   /** Enrich new items (titles, summaries, concepts, typed links). */
   enabled: boolean
-  /** Which preset was picked (also names the keychain entry). */
+  /** Places requests can go, each with its own key. */
+  connections: AiConnection[]
+  /** The id of the connection in use. */
+  active: string
+  /** Most calls per day; 0 means no limit. */
+  dailyLimit: number
+}
+
+/** One provider, model and key. */
+export interface AiConnection {
+  /** Names the keychain entry; never changes. */
+  id: string
+  /** What the user calls it. */
+  name: string
+  /** Which preset it was made from. */
   preset: string
   kind: ProviderKind
   baseUrl: string
   model: string
   /** The model can read images, so screenshots and photos get described. */
   vision: boolean
-  /** Most calls per day; 0 means no limit. */
-  dailyLimit: number
 }
 
 export interface AiKeyStatus {

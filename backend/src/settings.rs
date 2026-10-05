@@ -28,34 +28,108 @@ pub struct Settings {
     pub ai: AiSettings,
 }
 
-/// The connected AI provider. The API key is not here: it lives in the system keychain.
+/// The AI side of the settings. API keys are not here: each connection's key lives in the
+/// system keychain, under the connection's id.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default, from = "RawAi")]
+pub struct AiSettings {
+    /// Enrich new items (titles, summaries, concepts, typed links).
+    pub enabled: bool,
+    /// Places the user can send requests to, each with its own key.
+    pub connections: Vec<AiConnection>,
+    /// The id of the connection in use.
+    pub active: String,
+    /// Most calls per day; 0 means no limit.
+    pub daily_limit: u32,
+}
+
+/// One provider, model and key (the key itself is in the keychain).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
-pub struct AiSettings {
-    /// Enrich new items (titles, summaries, concepts, typed links) with the provider.
-    pub enabled: bool,
-    /// Which preset was picked (e.g. "groq"); also names the keychain entry for its key.
+pub struct AiConnection {
+    /// Names the keychain entry; never changes.
+    pub id: String,
+    /// What the user calls it ("Work OpenAI").
+    pub name: String,
+    /// Which preset it was made from (for the form; e.g. "groq").
     pub preset: String,
     pub kind: ProviderKind,
     pub base_url: String,
     pub model: String,
     /// The model can read images, so screenshots and photos get described.
     pub vision: bool,
-    /// Most calls per day; 0 means no limit.
-    pub daily_limit: u32,
 }
 
 impl Default for AiSettings {
     fn default() -> Self {
+        Self { enabled: false, connections: Vec::new(), active: String::new(), daily_limit: 500 }
+    }
+}
+
+impl Default for AiConnection {
+    fn default() -> Self {
         Self {
-            enabled: false,
+            id: String::new(),
+            name: "OpenAI".into(),
             preset: "openai".into(),
             kind: ProviderKind::OpenAi,
             base_url: "https://api.openai.com/v1".into(),
             model: "gpt-4o-mini".into(),
             vision: true,
-            daily_limit: 500,
         }
+    }
+}
+
+impl AiSettings {
+    /// The connection in use, if there is one.
+    pub fn active_connection(&self) -> Option<&AiConnection> {
+        self.connections.iter().find(|c| c.id == self.active)
+    }
+}
+
+/// What the settings file may hold: the current shape, and the earlier one with a single provider
+/// (`preset`, `kind`, `baseUrl`, `model`, `vision` beside `enabled`).
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct RawAi {
+    enabled: bool,
+    connections: Vec<AiConnection>,
+    active: String,
+    daily_limit: Option<u32>,
+    preset: Option<String>,
+    kind: Option<ProviderKind>,
+    base_url: Option<String>,
+    model: Option<String>,
+    vision: Option<bool>,
+}
+
+impl From<RawAi> for AiSettings {
+    fn from(raw: RawAi) -> Self {
+        let mut ai = AiSettings {
+            enabled: raw.enabled,
+            connections: raw.connections,
+            active: raw.active,
+            daily_limit: raw.daily_limit.unwrap_or(AiSettings::default().daily_limit),
+        };
+        // An earlier version had one provider. It becomes a connection named after its preset, so
+        // the key already in the keychain (stored under the preset's name) keeps working.
+        if let (true, Some(preset)) = (ai.connections.is_empty(), raw.preset) {
+            let base = AiConnection::default();
+            ai.connections.push(AiConnection {
+                id: preset.clone(),
+                name: preset.clone(),
+                preset: preset.clone(),
+                kind: raw.kind.unwrap_or(base.kind),
+                base_url: raw.base_url.unwrap_or(base.base_url),
+                model: raw.model.unwrap_or(base.model),
+                vision: raw.vision.unwrap_or(base.vision),
+            });
+            ai.active = preset;
+        }
+        if ai.active_connection().is_none() {
+            ai.active = ai.connections.first().map(|c| c.id.clone()).unwrap_or_default();
+        }
+        ai
     }
 }
 
@@ -141,6 +215,26 @@ mod tests {
         store.set(changed.clone()).unwrap();
         assert_eq!(SettingsStore::load(path).unwrap().get(), changed);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_single_provider_of_an_earlier_version_becomes_a_connection() {
+        let old = r#"{"ai":{"enabled":true,"preset":"groq","kind":"openai","baseUrl":"https://api.groq.com/openai/v1","model":"llama-3.3-70b-versatile","vision":false,"dailyLimit":100}}"#;
+        let settings: Settings = serde_json::from_str(old).unwrap();
+        let ai = settings.ai;
+        assert!(ai.enabled && ai.daily_limit == 100);
+        assert_eq!(ai.connections.len(), 1);
+        // Same id as the old keychain entry, so the saved key is still found.
+        assert_eq!((ai.connections[0].id.as_str(), ai.active.as_str()), ("groq", "groq"));
+        assert_eq!(ai.active_connection().map(|c| c.model.as_str()), Some("llama-3.3-70b-versatile"));
+        assert!(!ai.connections[0].vision);
+
+        // The current shape round-trips, and a dangling `active` falls back to the first.
+        let json = serde_json::to_string(&Settings { ai: ai.clone(), ..Settings::default() }).unwrap();
+        assert_eq!(serde_json::from_str::<Settings>(&json).unwrap().ai, ai);
+        let dangling: AiSettings = serde_json::from_str(r#"{"connections":[{"id":"a","name":"A"}],"active":"gone"}"#).unwrap();
+        assert_eq!(dangling.active, "a");
+        assert_eq!(AiSettings::default().active_connection(), None);
     }
 
     #[test]

@@ -220,6 +220,12 @@ map**: items light up as it reads them.
 - **Rendering:** Sigma.js (WebGL). Positions are computed once (embedding projection +
   ForceAtlas2 refinement in a Web Worker) and stored, so the map stays stable between sessions;
   new items are placed near their neighbors without moving everything else.
+- **Keyboard:** arrow keys glide the view while held (Shift: faster), `+` / `-` zoom, `0` shows the
+  whole map, `F` centres the selected item, `/` searches, `Esc` clears, `Del` deletes. The map keys
+  are inactive in text fields, the side panel and dialogs.
+- **Zoom:** scrolling or pinching zooms around the cursor and eases smoothly; zooming out stops a
+  little past the whole map. Two fingers sliding up zoom in; Settings → General → Map switches to
+  the mouse-wheel direction.
 - **Understanding:** semantic zoom. Zoomed out shows ~10–20 named topics sized by content; zooming
   in reveals sub-topics, then items. Focus mode shows one item's 1–2 hop neighborhood. Each item
   keeps only its top 3–5 edges by default; weak similarity edges are hidden; filters by time,

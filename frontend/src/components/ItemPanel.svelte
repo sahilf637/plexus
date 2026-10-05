@@ -33,6 +33,11 @@
   /** Preview URLs of the extra originals that are images, by position. */
   let extraUrls = $state<(string | null)[]>([])
   let error = $state('')
+  let scroller = $state<HTMLDivElement>()
+  let heading = $state<HTMLElement>()
+  /** The note's own title has scrolled out of view, so the bar on top shows it instead. */
+  let titleHidden = $state(false)
+  let scrolled = $state(false)
 
   // Reloads when the item changes in the background too (a link's page was read).
   const version = $derived(`${items.get(id)?.bodyHash}|${items.get(id)?.title}`)
@@ -96,11 +101,22 @@
     }, 150)
   })
 
-  // A different item starts with the box closed.
+  // A different item starts with the box closed, scrolled to the top.
   $effect(() => {
     void id
     linking = false
     linkQuery = ''
+    titleHidden = false
+    scrolled = false
+    scroller?.scrollTo({ top: 0 })
+  })
+
+  // The bar on top names the note once its heading has gone out of sight.
+  $effect(() => {
+    if (!scroller || !heading) return
+    const watch = new IntersectionObserver(([entry]) => (titleHidden = !entry.isIntersecting), { root: scroller })
+    watch.observe(heading)
+    return () => watch.disconnect()
   })
 
   async function makeLink(other: string) {
@@ -139,11 +155,16 @@
 </script>
 
 <aside>
-  <header>
+  <header class:scrolled>
     <span class="chip" style:--kind={detail ? `var(--kind-${detail.kind})` : 'var(--accent)'}>
       {#if detail}<Icon name={kindIcon[detail.kind]} size={13} />{/if}
       {detail ? kindLabel[detail.kind] : ''}{detail?.language ? ` · ${detail.language}` : ''}
     </span>
+    {#if detail && titleHidden}
+      <button class="bar-title" onclick={() => scroller?.scrollTo({ top: 0, behavior: 'smooth' })} title="Back to the top">{detail.title}</button>
+    {:else}
+      <span class="bar-gap"></span>
+    {/if}
     <span class="tools">
       {#if detail?.sourceUrl}
         <button class="icon-btn" onclick={() => openSource(detail!.id)} title="Open link" aria-label="Open link">
@@ -167,10 +188,11 @@
     </span>
   </header>
 
+  <div class="scroll" bind:this={scroller} onscroll={() => (scrolled = (scroller?.scrollTop ?? 0) > 2)}>
   {#if error}
     <p class="error">{error}</p>
   {:else if detail}
-    <h2>{detail.title}</h2>
+    <h2 bind:this={heading}>{detail.title}</h2>
     <p class="meta">
       {capturedLabel(detail.capturedAt)}{#if detail.size} · {formatBytes(detail.size)}{/if}
       {#if detail.titleByAi}
@@ -301,32 +323,92 @@
       {/if}
     </section>
   {/if}
+  </div>
 </aside>
 
 <style>
+  /* Docked to the right edge, as if it slid in from the side. */
   aside {
     position: absolute;
-    top: 12px;
-    right: 12px;
-    bottom: 12px;
-    width: min(380px, calc(100% - 24px));
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(400px, 100%);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--surface);
+    box-shadow: -12px 0 28px -16px rgb(0 0 0 / 0.45);
+    animation: slide-in 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+
+  @keyframes slide-in {
+    from {
+      transform: translateX(24px);
+      opacity: 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    aside {
+      animation: none;
+    }
+  }
+
+  /* The bar stays put while the note scrolls underneath it. */
+  header {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px 8px 16px;
+    background: var(--surface);
+    transition: box-shadow 150ms;
+  }
+
+  header.scrolled {
+    box-shadow: 0 8px 10px -8px rgb(0 0 0 / 0.35);
+    z-index: 1;
+  }
+
+  .bar-gap {
+    flex: 1;
+  }
+
+  .bar-title {
+    flex: 1;
+    min-width: 0;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--text);
+    font-weight: 600;
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    animation: bar-in 150ms ease-out;
+  }
+
+  @keyframes bar-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+  }
+
+  .scroll {
+    flex: 1;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     gap: 8px;
-    padding: 12px 16px 16px;
+    padding: 4px 16px 16px;
     overflow-y: auto;
-    background: var(--surface);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow);
-  }
-
-  header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
   }
 
   .chip {
+    flex: none;
     display: inline-flex;
     align-items: center;
     gap: 5px;
@@ -339,6 +421,7 @@
   }
 
   .tools {
+    flex: none;
     display: flex;
     gap: 2px;
     margin-right: -6px;
