@@ -42,6 +42,13 @@ pub struct NoteMeta {
     /// the user changed it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extracted: Option<String>,
+    /// Who set the title when it wasn't Plexus's own first guess: "ai" (an AI provider) or "you"
+    /// (the AI title was reverted, so it isn't changed again).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_by: Option<String>,
+    /// The title before the AI replaced it, to put back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_was: Option<String>,
     /// More originals captured together with `asset` under one note (several screenshots with
     /// a note about them), in the order they were added. Also next to the note.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -134,6 +141,8 @@ mod tests {
                 mime: None,
                 size: None,
                 extracted: None,
+                title_by: None,
+                title_was: None,
                 attachments: Vec::new(),
                 links: vec![],
                 extra: BTreeMap::new(),

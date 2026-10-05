@@ -1,7 +1,7 @@
 // The only module that talks to the Rust side. Outside Tauri (`npm run dev:ui`) every call
 // goes to an in-memory mock instead, so the UI can be built in a plain browser.
 
-import type { CaptureResult, Deleted, HotkeyStatus, Item, ItemDetail, MapData, Position, Preview, Settings } from './types'
+import type { AiKeyStatus, CaptureResult, Deleted, EnrichStatus, HotkeyStatus, Item, ItemDetail, MapData, Position, Preview, Settings } from './types'
 import * as mock from './mock/backend'
 
 export const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
@@ -25,6 +25,18 @@ export async function on<T>(event: string, handler: (payload: T) => void): Promi
 
 export const getSettings = () => call<Settings>('get_settings')
 export const setSettings = (settings: Settings) => call<Settings>('set_settings', { settings })
+export const aiKeyStatus = () => call<AiKeyStatus>('ai_key_status')
+/** Stores the key for the selected provider in the system keychain (empty removes it). */
+export const setAiKey = (key: string) => call<void>('set_ai_key', { key })
+/** A tiny request with the saved settings and key; rejects with why it failed. */
+export const testAi = () => call<void>('test_ai')
+export const enrichStatus = () => call<EnrichStatus>('enrich_status')
+/** Tries again after a pause (a wrong key fixed, a limit raised). */
+export const enrichRetry = () => call<void>('enrich_retry')
+/** Puts back the title an item had before the AI renamed it. */
+export const revertTitle = (id: string) => call<void>('revert_title', { id })
+/** Removes a link the AI proposed; it won't come back. */
+export const removeAiLink = (a: string, b: string) => call<void>('remove_ai_link', { a, b })
 export const hotkeyStatus = () => call<HotkeyStatus>('hotkey_status')
 export const configureHotkey = () => call<void>('configure_hotkey')
 

@@ -8,7 +8,9 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::capture::detect::{self, Kind};
 use crate::capture::{self, CaptureResult, Preview, clipboard, hotkey, save};
-use crate::db::graph;
+use crate::db::{concepts, graph};
+use crate::enrich;
+use crate::llm::keys;
 use crate::db::items::{self, Item};
 use crate::error::{Error, Result};
 use crate::library::{links, trash};
@@ -29,7 +31,81 @@ pub fn set_settings(app: AppHandle, state: State<'_, AppState>, settings: Settin
     if settings.hotkey != previous.hotkey {
         hotkey::register(&app);
     }
+    if settings.ai != previous.ai {
+        enrich::settings_changed(&app, &previous.ai, &settings.ai);
+    }
     Ok(settings)
+}
+
+/// Whether a key is stored for the AI provider that is selected.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiKeyStatus {
+    has_key: bool,
+    /// Set when the system keychain couldn't be read.
+    error: Option<String>,
+}
+
+#[tauri::command]
+pub fn ai_key_status(state: State<'_, AppState>) -> AiKeyStatus {
+    match keys::get(&state.settings.get().ai.preset) {
+        Ok(key) => AiKeyStatus { has_key: key.is_some(), error: None },
+        Err(e) => AiKeyStatus { has_key: false, error: Some(e.to_string()) },
+    }
+}
+
+/// Stores the key for the selected provider in the system keychain (an empty key removes it).
+#[tauri::command]
+pub fn set_ai_key(app: AppHandle, state: State<'_, AppState>, key: String) -> Result<()> {
+    let preset = state.settings.get().ai.preset;
+    if key.trim().is_empty() {
+        keys::clear(&preset)?;
+    } else {
+        keys::set(&preset, &key)?;
+    }
+    state.enricher.resume();
+    enrich::requeue_missed(&state);
+    let _ = app.emit("enrich-status", state.enricher.status(state.settings.get().ai.enabled));
+    Ok(())
+}
+
+/// Checks the saved AI settings and key with a tiny request. Runs off the UI thread: a slow
+/// provider can take a while.
+#[tauri::command]
+pub async fn test_ai(state: State<'_, AppState>) -> Result<()> {
+    let ai = state.settings.get().ai;
+    tauri::async_runtime::spawn_blocking(move || enrich::test_connection(&ai))
+        .await
+        .map_err(|e| Error::Invalid(e.to_string()))?
+}
+
+#[tauri::command]
+pub fn enrich_status(state: State<'_, AppState>) -> enrich::QueueStatus {
+    state.enricher.status(state.settings.get().ai.enabled)
+}
+
+/// Tries again after a pause (a wrong key fixed, a limit raised).
+#[tauri::command]
+pub fn enrich_retry(app: AppHandle, state: State<'_, AppState>) {
+    state.enricher.resume();
+    enrich::requeue_missed(&state);
+    let _ = app.emit("enrich-status", state.enricher.status(state.settings.get().ai.enabled));
+}
+
+/// Puts back the title an item had before the AI renamed it (and keeps it from changing again).
+#[tauri::command]
+pub fn revert_title(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<()> {
+    if let Some(item) = enrich::apply::revert_title(&state.library, &state.db, &id)? {
+        let _ = app.emit("item-updated", &item);
+    }
+    Ok(())
+}
+
+/// Removes a link the AI proposed; it won't come back.
+#[tauri::command]
+pub fn remove_ai_link(app: AppHandle, state: State<'_, AppState>, a: String, b: String) -> Result<()> {
+    state.db.with(|conn| graph::reject_ai_edge(conn, &a, &b))?;
+    announce_links(&app, [&a, &b], Vec::new(), &state)
 }
 
 #[tauri::command]
@@ -178,6 +254,10 @@ pub struct ItemDetail {
     attachments: Vec<AttachmentDetail>,
     /// Text read out of the original (a PDF's pages, an image's words), apart from the note.
     extracted_text: Option<String>,
+    concepts: Vec<concepts::Concept>,
+    /// The title was written by the AI (and can be reverted to `title_was`).
+    title_by_ai: bool,
+    title_was: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -207,7 +287,10 @@ pub fn get_item(state: State<'_, AppState>, id: String) -> Result<ItemDetail> {
         .collect();
     let (own, extracted) = crate::extract::split_body(&note.body);
     let (body, extracted_text) = (own.to_string(), extracted.map(str::to_string));
-    Ok(ItemDetail { item, body, asset_file, attachments, extracted_text })
+    let concepts = state.db.with(|conn| concepts::of_item(conn, &id))?;
+    let title_by_ai = note.meta.title_by.as_deref() == Some("ai");
+    let title_was = note.meta.title_was.clone().filter(|_| title_by_ai);
+    Ok(ItemDetail { item, body, asset_file, attachments, extracted_text, concepts, title_by_ai, title_was })
 }
 
 /// Everything the map draws: items, edges and saved positions.
@@ -216,12 +299,18 @@ pub struct MapData {
     items: Vec<Item>,
     edges: Vec<graph::Edge>,
     positions: Vec<graph::Position>,
+    concepts: Vec<concepts::ConceptItems>,
 }
 
 #[tauri::command]
 pub fn get_map(state: State<'_, AppState>) -> Result<MapData> {
     state.db.with(|conn| {
-        Ok(MapData { items: items::all(conn)?, edges: graph::edges(conn)?, positions: graph::positions(conn)? })
+        Ok(MapData {
+            items: items::all(conn)?,
+            edges: graph::edges(conn)?,
+            positions: graph::positions(conn)?,
+            concepts: concepts::with_items(conn)?,
+        })
     })
 }
 

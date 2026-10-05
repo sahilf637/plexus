@@ -8,6 +8,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
+use crate::llm::ProviderKind;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -24,6 +25,38 @@ pub struct Settings {
     pub fetch_links: bool,
     /// Save text copied anywhere, without pasting it into Plexus. Off by default.
     pub watch_clipboard: bool,
+    pub ai: AiSettings,
+}
+
+/// The connected AI provider. The API key is not here: it lives in the system keychain.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AiSettings {
+    /// Enrich new items (titles, summaries, concepts, typed links) with the provider.
+    pub enabled: bool,
+    /// Which preset was picked (e.g. "groq"); also names the keychain entry for its key.
+    pub preset: String,
+    pub kind: ProviderKind,
+    pub base_url: String,
+    pub model: String,
+    /// The model can read images, so screenshots and photos get described.
+    pub vision: bool,
+    /// Most calls per day; 0 means no limit.
+    pub daily_limit: u32,
+}
+
+impl Default for AiSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            preset: "openai".into(),
+            kind: ProviderKind::OpenAi,
+            base_url: "https://api.openai.com/v1".into(),
+            model: "gpt-4o-mini".into(),
+            vision: true,
+            daily_limit: 500,
+        }
+    }
 }
 
 /// What the global shortcut does.
@@ -47,6 +80,7 @@ impl Default for Settings {
             start_at_login: true,
             fetch_links: true,
             watch_clipboard: false,
+            ai: AiSettings::default(),
         }
     }
 }

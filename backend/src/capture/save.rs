@@ -151,6 +151,8 @@ fn new_meta(detected: &Detected, hash: String, source: Option<String>) -> NoteMe
         mime: None,
         size: None,
         extracted: None,
+        title_by: None,
+        title_was: None,
         attachments: Vec::new(),
         links: Vec::new(),
         extra: Default::default(),

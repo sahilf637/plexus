@@ -49,6 +49,8 @@ const GROUP_MS = 500
  * map tidied once the burst is over, since one-by-one placement can't form groups at that scale. */
 const BURST_SIZE = 15
 const BURST_QUIET_MS = 2500
+/** How long the gentle relayout runs after a few items settled. */
+const RELAX_MS = 1200
 
 function cssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
@@ -270,6 +272,28 @@ export class MapController {
     )
   }
 
+  /** A short force-layout pass from the current positions: newly linked items pull their groups
+   * together and push unrelated ones apart, without regrouping or moving the camera. */
+  private relax(): Promise<void> {
+    if (this.layout || this.graph.size === 0) return Promise.resolve()
+    const graph = this.graph as unknown as Graph
+    const layout = new FA2Layout(this.graph, { settings: forceSettings(graph), getEdgeWeight: 'weight' })
+    this.layout = layout
+    layout.start()
+    return new Promise((done) =>
+      setTimeout(() => {
+        layout.kill()
+        if (this.layout !== layout) return done() // Superseded by a tidy or a delete.
+        this.layout = undefined
+        for (const [id, position] of Object.entries(rescaled(graph, SPIRAL_SPACING))) {
+          this.graph.mergeNodeAttributes(id, position)
+        }
+        this.events.placed(this.positions())
+        done()
+      }, RELAX_MS),
+    )
+  }
+
   /** Animates nodes to new positions, then calls `done`. Animation needs animation frames, which
    * a hidden window doesn't get, so the positions are applied directly if it hasn't finished in
    * time. */
@@ -296,7 +320,9 @@ export class MapController {
     this.burst++
     clearTimeout(this.burstTimer)
     this.burstTimer = setTimeout(() => {
+      // A big burst regroups from scratch; a few new items just let the map settle where it is.
       if (this.burst >= BURST_SIZE) void this.tidy()
+      else if (this.burst > 0) void this.relax()
       this.burst = 0
     }, BURST_QUIET_MS)
   }

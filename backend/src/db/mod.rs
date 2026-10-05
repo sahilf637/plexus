@@ -3,6 +3,7 @@
 //! be deleted at any time.
 
 pub mod chunks;
+pub mod concepts;
 pub mod graph;
 pub mod items;
 
@@ -101,6 +102,39 @@ const MIGRATIONS: &[&str] = &[r#"
         PRIMARY KEY (src, dst)
     );
     CREATE INDEX user_links_dst ON user_links(dst);
+"#, r#"
+    -- AI enrichment (M2). All of it is derived and can be made again.
+    ALTER TABLE items ADD COLUMN summary TEXT;
+
+    -- A small shared vocabulary of ideas. The embedding of the name finds the ones relevant to
+    -- an item and merges near-duplicates.
+    CREATE TABLE concepts (
+        id         INTEGER PRIMARY KEY,
+        name       TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        embedding  BLOB NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE concept_aliases (
+        alias      TEXT PRIMARY KEY COLLATE NOCASE,
+        concept_id INTEGER NOT NULL REFERENCES concepts(id) ON DELETE CASCADE
+    );
+    CREATE TABLE item_concepts (
+        item_id    TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+        concept_id INTEGER NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+        weight     REAL NOT NULL DEFAULT 1,
+        PRIMARY KEY (item_id, concept_id)
+    );
+    CREATE INDEX item_concepts_concept ON item_concepts(concept_id);
+
+    -- What was last sent to the provider for an item: the same content (and enrichment version)
+    -- is never sent twice. `title` is the AI's title, to tell it from one the user changed.
+    CREATE TABLE enrichment (
+        item_id      TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
+        content_hash TEXT NOT NULL,
+        version      INTEGER NOT NULL,
+        title        TEXT,
+        enriched_at  TEXT NOT NULL
+    );
 "#];
 
 pub struct Db {

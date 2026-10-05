@@ -1,8 +1,8 @@
 // In-memory stand-in for the Rust backend, used by `npm run dev:ui`. Detection here is a rough
 // approximation, good enough to exercise the UI; the real rules live in Rust.
 
-import type { CaptureResult, Deleted, Edge, HotkeyStatus, Item, ItemDetail, ItemLinked, Kind, MapData, Position, Preview, Settings, Tier } from '../types'
-import { sampleItems } from './samples'
+import type { AiKeyStatus, CaptureResult, Concept, ConceptItems, Deleted, Edge, EnrichStatus, HotkeyStatus, Item, ItemDetail, ItemLinked, Kind, MapData, Position, Preview, Settings, Tier } from '../types'
+import { sampleConcepts, sampleItems } from './samples'
 
 let settings: Settings = {
   libraryPath: '~/Plexus',
@@ -11,6 +11,29 @@ let settings: Settings = {
   startAtLogin: true,
   fetchLinks: true,
   watchClipboard: false,
+  ai: {
+    enabled: false,
+    preset: 'openai',
+    kind: 'openai',
+    baseUrl: 'https://api.openai.com/v1',
+    model: 'gpt-4o-mini',
+    vision: true,
+    dailyLimit: 500,
+  },
+}
+
+// The keychain, the AI queue and what the AI said (concepts and typed links), simulated.
+let hasKey = false
+let enrichState: EnrichStatus = { state: 'idle', pending: 0, message: null }
+const conceptsByItem = new Map<string, Concept[]>()
+const aiEdges: Edge[] = [
+  { src: 'sample-1', dst: 'sample-0', kind: 'example_of', weight: 0.84, tier: 'strong', reason: 'The code shows the one-owner rule in action' },
+  { src: 'sample-2', dst: 'sample-0', kind: 'extends', weight: 0.8, tier: 'strong', reason: 'The Rust book explains ownership in more depth' },
+]
+let conceptId = 1
+for (const [name, indexes] of Object.entries(sampleConcepts)) {
+  const concept = { id: conceptId++, name }
+  for (const i of indexes) conceptsByItem.set(`sample-${i}`, [...(conceptsByItem.get(`sample-${i}`) ?? []), concept])
 }
 
 const items: ItemDetail[] = sampleItems()
@@ -54,8 +77,19 @@ const userEdges = (): Edge[] =>
   userLinks
     .filter(([a, b]) => items.some((i) => i.id === a) && items.some((i) => i.id === b))
     .map(([src, dst]) => ({ src, dst, kind: 'user', weight: 1, tier: 'strong', reason: 'linked by you' }))
-const edgesTouching = (...ids: string[]) =>
-  [...userEdges(), ...(exported?.edges ?? allSimilar())].filter((e) => ids.includes(e.src) || ids.includes(e.dst))
+/** One edge per pair: by hand, then AI (its type and reason), then by meaning. */
+function merged(): Edge[] {
+  const pairs = new Map<string, Edge>()
+  const rank = (e: Edge) => (e.kind === 'user' ? 2 : e.kind === 'similar' ? 0 : 1)
+  for (const e of [...(exported?.edges ?? allSimilar()), ...aiEdges.filter(live), ...userEdges()]) {
+    const key = [e.src, e.dst].sort().join('|')
+    const current = pairs.get(key)
+    if (!current || rank(e) > rank(current)) pairs.set(key, current && rank(e) === 1 ? { ...e, weight: Math.max(e.weight, current.weight) } : e)
+  }
+  return [...pairs.values()].sort((a, b) => b.weight - a.weight)
+}
+const live = (e: Edge) => items.some((i) => i.id === e.src) && items.some((i) => i.id === e.dst)
+const edgesTouching = (...ids: string[]) => merged().filter((e) => ids.includes(e.src) || ids.includes(e.dst))
 
 function allSimilar(): Edge[] {
   const seen = new Set<string>()
@@ -81,6 +115,9 @@ function addItem(title: string, kind: Kind, body: string): CaptureResult {
     size: null,
     status: 'pending',
     extracted: null,
+    summary: null,
+    titleByAi: false,
+    titleWas: null,
     body,
     assetFile: null,
     attachments: [],
@@ -104,8 +141,50 @@ function addItem(title: string, kind: Kind, body: string): CaptureResult {
     const edges = linksFor(item)
     const related = edges.map((e) => ({ id: e.dst, title: items.find((i) => i.id === e.dst)!.title, weight: e.weight, tier: e.tier }))
     emit('item-linked', { id: item.id, status: 'linked', edges, related } satisfies ItemLinked)
+    enrich(item, related[0]?.id)
   }, readDelay + 500)
   return { status: 'saved', id: item.id, title, kind }
+}
+
+const conceptIndex = (): ConceptItems[] => {
+  const byId = new Map<number, ConceptItems>()
+  for (const [item, list] of conceptsByItem)
+    for (const c of list) byId.set(c.id, { ...c, items: [...(byId.get(c.id)?.items ?? []), item] })
+  return [...byId.values()]
+}
+
+const setStatus = (status: EnrichStatus) => emit('enrich-status', (enrichState = status))
+
+/** Stand-in for the AI: a summary, a few concepts from the longer words, a nicer title for notes,
+ * and a typed link to the closest item. */
+function enrich(item: ItemDetail, closest?: string) {
+  if (!settings.ai.enabled) return
+  if (!hasKey && !/ollama|lmstudio|custom/.test(settings.ai.preset)) {
+    setStatus({ state: 'paused', pending: 1, message: "The AI provider didn't accept the key (no key set). Check it in Settings." })
+    return
+  }
+  setStatus({ state: 'working', pending: 1, message: null })
+  setTimeout(() => {
+    const common = [...words(item)].sort((a, b) => b.length - a.length).slice(0, 3)
+    const concepts = common.map((name) => {
+      const known = [...conceptsByItem.values()].flat().find((c) => c.name === name)
+      return known ?? { id: conceptId++, name }
+    })
+    conceptsByItem.set(item.id, concepts)
+    item.summary = item.body.split(/(?<=[.!?])\s/)[0]?.slice(0, 160) || null
+    if (item.kind === 'text' && !item.titleByAi && common.length) {
+      item.titleWas = item.title
+      item.title = `${common[0][0].toUpperCase()}${common[0].slice(1)}: ${item.title.slice(0, 40)}`
+      item.titleByAi = true
+    }
+    emit('item-updated', { ...item })
+    emit('item-concepts', { id: item.id, concepts })
+    if (closest) {
+      aiEdges.push({ src: item.id, dst: closest, kind: 'supports', weight: 0.8, tier: 'strong', reason: `Both are about ${common[0] ?? 'the same thing'}` })
+      emit('links-changed', { ids: [item.id, closest], edges: edgesTouching(item.id, closest) })
+    }
+    setStatus({ state: 'idle', pending: 0, message: null })
+  }, 1400)
 }
 
 type Handler = (payload: never) => void
@@ -143,7 +222,38 @@ type Command = (args: Record<string, unknown>, headers?: Record<string, string>)
 
 const commands: Record<string, Command> = {
   get_settings: () => settings,
-  set_settings: (args) => (settings = args.settings as Settings),
+  set_settings: (args) => {
+    settings = args.settings as Settings
+    if (!settings.ai.enabled) setStatus({ state: 'off', pending: 0, message: null })
+    return settings
+  },
+  ai_key_status: (): AiKeyStatus => ({ hasKey, error: null }),
+  set_ai_key: (args) => {
+    hasKey = String(args.key).trim() !== ''
+    if (hasKey && enrichState.state === 'paused') setStatus({ state: 'idle', pending: 0, message: null })
+  },
+  test_ai: async () => {
+    await new Promise((done) => setTimeout(done, 700))
+    if (!hasKey && !/ollama|lmstudio|custom/.test(settings.ai.preset))
+      throw new Error("the provider didn't accept the key: no key set")
+  },
+  enrich_status: (): EnrichStatus => (settings.ai.enabled ? enrichState : { state: 'off', pending: 0, message: null }),
+  enrich_retry: () => setStatus({ state: 'idle', pending: 0, message: null }),
+  revert_title: (args) => {
+    const item = items.find((i) => i.id === args.id)
+    if (!item?.titleWas) return
+    item.title = item.titleWas
+    item.titleWas = null
+    item.titleByAi = false
+    emit('item-updated', { ...item })
+  },
+  remove_ai_link: (args) => {
+    for (let i = aiEdges.length - 1; i >= 0; i--) {
+      const e = aiEdges[i]
+      if ([e.src, e.dst].includes(String(args.a)) && [e.src, e.dst].includes(String(args.b))) aiEdges.splice(i, 1)
+    }
+    emit('links-changed', { ids: [String(args.a), String(args.b)], edges: edgesTouching(String(args.a), String(args.b)) })
+  },
   hotkey_status: () => status,
   configure_hotkey: () => {},
   // In the browser the capture window is its own page: open it in a new tab.
@@ -183,8 +293,7 @@ const commands: Record<string, Command> = {
   list_items: (): Item[] => items,
   get_map: async (): Promise<MapData> => {
     if (mapUrl) exported ??= await loadExported(mapUrl)
-    const edges = [...userEdges(), ...(exported?.edges ?? allSimilar())]
-    return { items, edges, positions: [...positions.values()] }
+    return { items, edges: merged(), positions: [...positions.values()], concepts: conceptIndex() }
   },
   save_layout: (args) => (args.positions as Position[]).forEach((p) => positions.set(p.id, p)),
   search: (args) => {

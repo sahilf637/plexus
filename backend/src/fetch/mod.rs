@@ -134,8 +134,11 @@ fn rewrite(library: &Library, db: &crate::db::Db, item: &Item, page: Option<Page
     }
     let stat = fs::metadata(&path)?;
     let updated = item_from_note(library, &path, &note, modified_nanos(&stat), stat.len() as i64);
-    db.with(|conn| items::upsert(conn, &updated, &note.body))?;
-    Ok(updated)
+    // Read back, so the AI's summary (kept in the index, not the note) isn't lost.
+    db.with(|conn| {
+        items::upsert(conn, &updated, &note.body)?;
+        Ok(items::get(conn, &updated.id)?.unwrap_or(updated))
+    })
 }
 
 #[cfg(test)]

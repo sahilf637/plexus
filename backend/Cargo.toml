@@ -51,6 +51,8 @@ pdf-extract = "0.12.1"
 roxmltree = "0.21.1"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 rapidocr-core = { version = "0.2.2", default-features = false }
+keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+base64 = "0.22"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Global shortcuts on Wayland go through the desktop portal.

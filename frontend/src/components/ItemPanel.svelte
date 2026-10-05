@@ -1,9 +1,10 @@
 <script lang="ts">
   import DOMPurify from 'dompurify'
   import { marked } from 'marked'
-  import { fileUrl, getItem, linkItems, openItemFile, openSource, search, unlinkItems } from '../lib/api'
-  import { formatBytes, kindLabel, linkStrength, tierLabel, tiers } from '../lib/kinds'
-  import type { Edge, Item, ItemDetail } from '../lib/types'
+  import { fileUrl, getItem, linkItems, openItemFile, openSource, removeAiLink, revertTitle, search, unlinkItems } from '../lib/api'
+  import { formatBytes, isAiLink, kindIcon, kindLabel, linkLabel, linkStrength, tierLabel, tiers } from '../lib/kinds'
+  import type { Concept, Edge, Item, ItemDetail } from '../lib/types'
+  import Icon from './Icon.svelte'
 
   let {
     id,
@@ -12,6 +13,9 @@
     onselect,
     onclose,
     ondelete,
+    concepts,
+    activeConcept,
+    onconcept,
   }: {
     id: string
     items: Map<string, Item>
@@ -19,6 +23,9 @@
     onselect: (id: string) => void
     onclose: () => void
     ondelete: () => void
+    concepts: Concept[]
+    activeConcept: number | null
+    onconcept: (concept: Concept) => void
   } = $props()
 
   let detail = $state<ItemDetail | null>(null)
@@ -28,7 +35,7 @@
   let error = $state('')
 
   // Reloads when the item changes in the background too (a link's page was read).
-  const version = $derived(items.get(id)?.bodyHash)
+  const version = $derived(`${items.get(id)?.bodyHash}|${items.get(id)?.title}`)
 
   $effect(() => {
     const current = id
@@ -125,8 +132,31 @@
 
 <aside>
   <header>
-    <span class="chip">{detail ? kindLabel[detail.kind] : ''}{detail?.language ? ` · ${detail.language}` : ''}</span>
-    <button class="close" onclick={onclose} aria-label="Close">✕</button>
+    <span class="chip" style:--kind={detail ? `var(--kind-${detail.kind})` : 'var(--accent)'}>
+      {#if detail}<Icon name={kindIcon[detail.kind]} size={13} />{/if}
+      {detail ? kindLabel[detail.kind] : ''}{detail?.language ? ` · ${detail.language}` : ''}
+    </span>
+    <span class="tools">
+      {#if detail?.sourceUrl}
+        <button class="icon-btn" onclick={() => openSource(detail!.id)} title="Open link" aria-label="Open link">
+          <Icon name="external" />
+        </button>
+      {/if}
+      {#if detail}
+        <button
+          class="icon-btn"
+          onclick={() => openItemFile(detail!.id)}
+          title={detail.assetPath ? 'Open file' : 'Open note'}
+          aria-label={detail.assetPath ? 'Open file' : 'Open note'}
+        >
+          <Icon name="file" />
+        </button>
+        <button class="icon-btn danger" onclick={ondelete} title="Delete (Del). You can undo right after." aria-label="Delete">
+          <Icon name="trash" />
+        </button>
+      {/if}
+      <button class="icon-btn" onclick={onclose} title="Close (Esc)" aria-label="Close"><Icon name="close" /></button>
+    </span>
   </header>
 
   {#if error}
@@ -134,17 +164,24 @@
   {:else if detail}
     <h2>{detail.title}</h2>
     <p class="meta">
-      Saved {capturedLabel(detail.capturedAt)}
-      {#if detail.size}· {formatBytes(detail.size)}{/if}
+      {capturedLabel(detail.capturedAt)}{#if detail.size} · {formatBytes(detail.size)}{/if}
+      {#if detail.titleByAi}
+        · <span class="ai" title={detail.titleWas ? `Was: ${detail.titleWas}` : ''}>AI title</span>
+        <button class="revert" onclick={() => revertTitle(detail!.id)}>Revert</button>
+      {/if}
     </p>
-
-    <div class="actions">
-      {#if detail.sourceUrl}<button onclick={() => openSource(detail!.id)}>Open link</button>{/if}
-      <button onclick={() => openItemFile(detail!.id)}>{detail.assetPath ? 'Open file' : 'Open note'}</button>
-      <button class="delete" onclick={ondelete} title="Move to the trash. You can undo right after.">
-        Delete <kbd>Del</kbd>
-      </button>
-    </div>
+    {#if items.get(id)?.summary}<p class="summary">{items.get(id)?.summary}</p>{/if}
+    {#if concepts.length}
+      <ul class="concepts" aria-label="Concepts">
+        {#each concepts as concept (concept.id)}
+          <li>
+            <button class:on={activeConcept === concept.id} onclick={() => onconcept(concept)} title="Show everything about this on the map">
+              {concept.name}
+            </button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
 
     {#if detail.kind === 'url' && html}<p class="source muted">{detail.sourceUrl}</p>{/if}
 
@@ -160,9 +197,9 @@
             <img src={extraUrls[i]} alt={attachment.name} />
           {:else if attachment.kind !== 'image'}
             <button class="attachment" onclick={() => openItemFile(detail!.id, i)}>
+              <Icon name="file" size={15} />
               <span class="name">{attachment.name}</span>
               {#if attachment.size}<span class="muted">{formatBytes(attachment.size)}</span>{/if}
-              <span class="open">Open</span>
             </button>
           {/if}
         {/each}
@@ -170,11 +207,11 @@
         {#if noteHtml}<div class="markdown note">{@html noteHtml}</div>{/if}
         {#if detail.extractedText}
           <details class="extracted" open={detail.kind === 'file'}>
-            <summary>Text found in the {detail.kind === 'image' ? 'image' : 'file'}</summary>
+            <summary>Text found</summary>
             <pre>{detail.extractedText}</pre>
           </details>
         {:else if detail.extracted === null && detail.assetPath}
-          <p class="muted">Reading the {detail.kind === 'image' ? 'image' : 'file'}…</p>
+          <p class="muted">Reading…</p>
         {/if}
       {:else if detail.kind === 'url' && !html}
         <p class="source">{detail.sourceUrl}</p>
@@ -193,7 +230,12 @@
               <span class="dot" style:background={`var(--kind-${item.kind})`}></span>
               <span class="text">
                 <span class="title">{item.title}</span>
-                {#if edge.reason}<span class="reason">{edge.reason}</span>{/if}
+                {#if edge.reason || linkLabel(edge.kind, edge.src === id)}
+                  <span class="reason">
+                    {#if linkLabel(edge.kind, edge.src === id)}<span class="type">{linkLabel(edge.kind, edge.src === id)}</span>{/if}
+                    {edge.reason ?? ''}
+                  </span>
+                {/if}
               </span>
               <span class="strength" title="How closely related">
                 <span style:width={`${linkStrength(edge.weight) * 100}%`}></span>
@@ -201,6 +243,8 @@
             </button>
             {#if edge.kind === 'user'}
               <button class="unlink" title="Remove this link" aria-label="Remove link" onclick={() => unlinkItems(id, item.id)}>✕</button>
+            {:else if isAiLink(edge.kind)}
+              <button class="unlink" title="Remove this link" aria-label="Remove link" onclick={() => removeAiLink(id, item.id)}>✕</button>
             {/if}
           </li>
         {/each}
@@ -221,15 +265,15 @@
         {/if}
       {:else}
         <h3>Related</h3>
-        <p class="muted">{items.get(id)?.status === 'pending' ? 'Finding related items…' : 'Nothing related yet.'}</p>
+        <p class="muted">{items.get(id)?.status === 'pending' ? 'Finding…' : 'Nothing yet'}</p>
       {/each}
 
       {#if linking}
         <!-- svelte-ignore a11y_autofocus -->
         <input
-          class="link-search"
-          type="search"
-          placeholder="Search for an item to link"
+          class="input link-search"
+          type="text"
+          placeholder="Find an item to link"
           autofocus
           bind:value={linkQuery}
           onkeydown={(e) => e.key === 'Escape' && (e.stopPropagation(), (linking = false))}
@@ -245,7 +289,7 @@
           {/each}
         </ul>
       {:else}
-        <button class="add-link" onclick={() => (linking = true)}>Link to…</button>
+        <button class="btn add-link" onclick={() => (linking = true)}><Icon name="link" size={14} />Link to…</button>
       {/if}
     </section>
   {/if}
@@ -261,7 +305,7 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    padding: 14px 16px;
+    padding: 12px 16px 16px;
     overflow-y: auto;
     background: var(--surface);
     border: 1px solid var(--border);
@@ -276,25 +320,93 @@
   }
 
   .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     font-size: 12px;
-    padding: 2px 8px;
+    font-weight: 500;
+    padding: 3px 9px 3px 7px;
     border-radius: 999px;
+    background: color-mix(in srgb, var(--kind) 14%, transparent);
+    color: var(--kind);
+  }
+
+  .tools {
+    display: flex;
+    gap: 2px;
+    margin-right: -6px;
+  }
+
+  h2 {
+    margin: 4px 0 0;
+    font-size: 18px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+  }
+
+  .ai {
+    color: var(--accent);
+  }
+
+  .revert {
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--text-muted);
+    font-size: 12px;
+    text-decoration: underline;
+  }
+
+  .revert:hover {
+    color: var(--text);
+  }
+
+  .summary {
+    margin: 2px 0 0;
+    color: var(--text-muted);
+    overflow-wrap: anywhere;
+  }
+
+  .concepts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 4px 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .concepts li {
+    display: block;
+  }
+
+  .concepts button {
+    padding: 2px 9px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface-2);
+    font-size: 12px;
+  }
+
+  .concepts button:hover {
+    border-color: var(--accent);
+  }
+
+  .concepts button.on {
+    border-color: var(--accent);
     background: var(--accent-soft);
     color: var(--accent);
   }
 
-  .close {
-    border: none;
-    background: none;
-    color: var(--text-muted);
-    padding: 4px 6px;
-  }
-
-  h2 {
-    margin: 0;
-    font-size: 17px;
-    line-height: 1.3;
-    overflow-wrap: anywhere;
+  .type {
+    margin-right: 4px;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 11px;
   }
 
   .meta,
@@ -304,27 +416,10 @@
     margin: 0;
   }
 
-  .actions {
-    display: flex;
-    gap: 8px;
-  }
-
-  .actions button {
-    padding: 4px 10px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--surface-2);
-    font-size: 13px;
-  }
-
-  .actions .delete {
-    margin-left: auto;
-    color: var(--danger);
-  }
-
   .content {
+    margin-top: 6px;
+    padding-top: 12px;
     border-top: 1px solid var(--border);
-    padding-top: 10px;
   }
 
   .content img {
@@ -350,18 +445,15 @@
     border-radius: 8px;
     background: var(--surface-2);
     text-align: left;
+    color: var(--text-muted);
   }
 
   .attachment .name {
+    color: var(--text);
     flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .attachment .open {
-    color: var(--accent);
-    font-size: 12px;
   }
 
   .source {
@@ -410,13 +502,18 @@
   }
 
   section {
+    margin-top: 6px;
+    padding-top: 12px;
     border-top: 1px solid var(--border);
-    padding-top: 10px;
   }
 
   h3 {
-    margin: 0 0 6px;
-    font-size: 13px;
+    margin: 0 0 4px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-muted);
   }
 
   ul + h3,
@@ -448,6 +545,7 @@
   li {
     display: flex;
     align-items: center;
+    min-width: 0;
   }
 
   .unlink {
@@ -456,40 +554,32 @@
     color: var(--text-muted);
     padding: 4px 6px;
     font-size: 12px;
+    opacity: 0;
+  }
+
+  li:hover .unlink,
+  .unlink:focus-visible {
+    opacity: 1;
   }
 
   .add-link {
     margin-top: 10px;
-    padding: 4px 10px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--surface-2);
+    height: 28px;
     font-size: 13px;
   }
 
   .link-search {
-    width: 100%;
     margin-top: 10px;
-    padding: 5px 10px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--surface-2);
-    color: var(--text);
-    font: inherit;
-    outline: none;
-  }
-
-  .link-search:focus {
-    border-color: var(--accent);
   }
 
   li button:first-child {
     flex: 1;
+    min-width: 0;
     width: auto;
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 6px 4px;
+    padding: 6px 6px;
     border: none;
     border-radius: 6px;
     background: none;
@@ -497,7 +587,7 @@
   }
 
   li button:hover {
-    background: var(--surface-2);
+    background: var(--hover);
   }
 
   .dot {
@@ -531,8 +621,8 @@
   }
 
   .strength {
-    width: 48px;
-    height: 4px;
+    width: 32px;
+    height: 3px;
     flex-shrink: 0;
     border-radius: 2px;
     background: var(--surface-2);

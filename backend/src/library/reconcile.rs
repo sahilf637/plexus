@@ -97,6 +97,7 @@ pub fn item_from_note(library: &Library, path: &Path, note: &Note, mtime: i64, s
         file_size: size,
         status: Status::Pending,
         extracted: meta.extracted.clone(),
+        summary: None,
     }
 }
 
@@ -152,6 +153,8 @@ mod tests {
                 mime: None,
                 size: None,
                 extracted: None,
+                title_by: None,
+                title_was: None,
                 attachments: Vec::new(),
                 links: vec![],
                 extra: BTreeMap::new(),

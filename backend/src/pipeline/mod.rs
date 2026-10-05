@@ -124,6 +124,7 @@ fn prepare(state: &AppState) -> Result<()> {
     for id in &unread {
         state.fetcher.enqueue(id);
     }
+    crate::enrich::requeue_missed(state);
     Ok(())
 }
 
@@ -168,12 +169,14 @@ fn process(app: &AppHandle, state: &AppState, id: &str) -> Result<()> {
     })?;
     tracing::debug!(id, chunks = texts.len(), links = event.related.len(), elapsed = ?started.elapsed(), "item linked");
     let _ = app.emit("item-linked", event);
+    // Then the AI (if connected) adds titles, concepts and typed links.
+    state.enricher.enqueue(id, crate::enrich::Lane::New);
     Ok(())
 }
 
 /// The body without embedded images and links to the item's own files, which say nothing
 /// about it; web links stay.
-fn own_text(body: &str) -> String {
+pub(crate) fn own_text(body: &str) -> String {
     static LOCAL_EMBED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"!?\[[^\]]*\]\(([^)]*)\)").unwrap());
     // The extracted-text marker and page markers say nothing about the item.
     static COMMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<!--.*?-->").unwrap());

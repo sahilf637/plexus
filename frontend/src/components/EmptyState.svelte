@@ -1,5 +1,6 @@
 <script lang="ts">
   // What a new library shows instead of the map: one way in, and a hint at the other.
+  import Icon from './Icon.svelte'
   let { hotkey, onadd }: { hotkey: string; onadd: () => void } = $props()
 </script>
 
@@ -22,9 +23,9 @@
       </g>
     </svg>
 
-    <h1>Start your map</h1>
-    <button class="primary" onclick={onadd}>Add something <kbd>{hotkey}</kbd></button>
-    <p class="hint">or paste anywhere here</p>
+    <h1>Your map starts here</h1>
+    <button class="btn primary" onclick={onadd}><Icon name="plus" size={15} />Add something <kbd>{hotkey}</kbd></button>
+    <p class="hint">or just paste here <kbd>Ctrl</kbd> <kbd>V</kbd></p>
   </div>
 </div>
 
@@ -43,7 +44,7 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 16px;
+    gap: 14px;
     text-align: center;
   }
 
@@ -83,20 +84,11 @@
 
 
   .primary {
-    display: flex;
-    align-items: center;
-    gap: 10px;
+    height: 38px;
     margin-top: 4px;
-    padding: 9px 16px;
-    border: none;
+    padding: 0 16px;
     border-radius: 10px;
-    background: var(--accent);
-    color: white;
-    font-weight: 500;
-  }
-
-  .primary:hover {
-    filter: brightness(1.08);
+    box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 35%, transparent);
   }
 
   .primary kbd {
@@ -104,10 +96,6 @@
     background: rgb(255 255 255 / 0.15);
     color: white;
   }
-
-
-
-
 
   .hint {
     margin: 0;

@@ -113,8 +113,10 @@ pub fn extract_item(library: &Library, db: &Db, ocr: &Ocr, id: &str) -> Result<O
 
     let stat = std::fs::metadata(&note_path)?;
     let updated = item_from_note(library, &note_path, &note, modified_nanos(&stat), stat.len() as i64);
-    db.with(|conn| items::upsert(conn, &updated, &note.body))?;
-    Ok(Some(updated))
+    db.with(|conn| {
+        items::upsert(conn, &updated, &note.body)?;
+        Ok(Some(items::get(conn, &updated.id)?.unwrap_or(updated)))
+    })
 }
 
 #[cfg(test)]

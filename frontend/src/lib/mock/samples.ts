@@ -15,6 +15,30 @@ const samples: [Kind, string, string][] = [
   ['url', 'en.wikipedia.org/wiki/Forgetting_curve', 'https://en.wikipedia.org/wiki/Forgetting_curve'],
 ]
 
+/** What the AI would have said about the samples, so the map shows concepts and summaries. */
+const summaries = [
+  'Rust gives each value one owner and frees it when the owner goes out of scope.',
+  'A function that returns the longer of two string slices, with explicit lifetimes.',
+  'The Rust book chapter on how ownership works.',
+  'How often to feed a sourdough starter, and in what proportions.',
+  'Steam keeps the crust soft early on so the loaf can rise fully.',
+  null,
+  null,
+  null,
+  'Reviewing at growing intervals beats cramming for lasting memory.',
+  'How memory fades over time without review.',
+]
+
+/** Concepts by sample index. */
+export const sampleConcepts: Record<string, number[]> = {
+  ownership: [0, 1, 2],
+  'borrow checker': [0, 1],
+  'sourdough starter': [3, 4],
+  'bread baking': [3, 4],
+  'spaced repetition': [8, 9],
+  memory: [8, 9],
+}
+
 export function sampleItems(): ItemDetail[] {
   const start = Date.parse('2026-10-01T09:00:00Z')
   return samples.map(([kind, title, body], i) => ({
@@ -32,6 +56,9 @@ export function sampleItems(): ItemDetail[] {
     size: null,
     status: 'linked',
     extracted: kind === 'url' ? 'web@1' : null,
+    summary: summaries[i] ?? null,
+    titleByAi: false,
+    titleWas: null,
     body,
     assetFile: null,
     attachments: [],

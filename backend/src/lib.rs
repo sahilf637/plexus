@@ -1,10 +1,12 @@
 mod capture;
 mod commands;
 mod db;
+mod enrich;
 mod error;
 mod extract;
 mod fetch;
 mod library;
+mod llm;
 mod pipeline;
 mod settings;
 mod state;
@@ -61,7 +63,7 @@ pub fn run() {
             let (pipeline, link_queue) = Pipeline::new(Embedder::new(find_model(app.handle())));
             let (fetcher, fetch_queue) = Fetcher::new();
             let (extractor, extract_queue) = Extractor::new(Ocr::new(find_models(app.handle(), ocr::MODEL_DIR, Ocr::find)));
-            app.manage(AppState { settings, hotkey: Hotkey::default(), library, db, pipeline, fetcher, extractor });
+            app.manage(AppState { settings, hotkey: Hotkey::default(), library, db, pipeline, fetcher, extractor, enricher: Default::default() });
             start_background_work(app.handle(), link_queue, fetch_queue, extract_queue);
             tray::create(app.handle())?;
             hotkey::register(app.handle());
@@ -103,6 +105,13 @@ pub fn run() {
             commands::restore_items,
             commands::link_items,
             commands::unlink_items,
+            commands::ai_key_status,
+            commands::set_ai_key,
+            commands::test_ai,
+            commands::enrich_status,
+            commands::enrich_retry,
+            commands::revert_title,
+            commands::remove_ai_link,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Plexus");
@@ -128,6 +137,7 @@ fn start_background_work(app: &AppHandle, link_queue: Receiver<String>, fetch_qu
         }
         fetch::run(&app, fetch_queue);
         extract::worker::run(&app, extract_queue);
+        enrich::run(&app);
         pipeline::run(app.clone(), link_queue);
     });
 }

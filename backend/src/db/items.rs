@@ -59,6 +59,8 @@ pub struct Item {
     pub size: Option<i64>,
     /// What produced the body: "web@1" for a link whose page was read, … (see `NoteMeta`).
     pub extracted: Option<String>,
+    /// One line about the item, written by the AI provider (only in the index, not the note).
+    pub summary: Option<String>,
     #[serde(skip)]
     pub file_mtime: i64,
     #[serde(skip)]
@@ -76,6 +78,10 @@ pub struct FileState {
 
 const COLUMNS: &str = "id, path, kind, title, source_url, language, captured_at, body_hash, \
                        asset_path, asset_hash, mime, size, file_mtime, file_size, status, extracted";
+
+/// What reads select: the stored columns plus the AI summary.
+const SELECT: &str = "id, path, kind, title, source_url, language, captured_at, body_hash, \
+                      asset_path, asset_hash, mime, size, file_mtime, file_size, status, extracted, summary";
 
 fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Item> {
     let kind: String = row.get(2)?;
@@ -97,6 +103,7 @@ fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Item> {
         file_size: row.get(13)?,
         status: Status::parse(&status),
         extracted: row.get(15)?,
+        summary: row.get(16)?,
     })
 }
 
@@ -151,6 +158,7 @@ pub fn delete(conn: &mut Connection, id: &str) -> Result<()> {
     tx.execute("DELETE FROM items_fts WHERE item_id = ?1", [id])?;
     tx.execute("DELETE FROM user_links WHERE src = ?1", [id])?;
     tx.execute("DELETE FROM items WHERE id = ?1", [id])?;
+    super::concepts::gc(&tx)?;
     tx.commit()?;
     Ok(())
 }
@@ -171,12 +179,12 @@ pub fn set_status(conn: &Connection, id: &str, status: Status, pipeline_version:
 }
 
 pub fn get(conn: &Connection, id: &str) -> Result<Option<Item>> {
-    let sql = format!("SELECT {COLUMNS} FROM items WHERE id = ?1");
+    let sql = format!("SELECT {SELECT} FROM items WHERE id = ?1");
     Ok(conn.query_row(&sql, [id], from_row).optional()?)
 }
 
 pub fn all(conn: &Connection) -> Result<Vec<Item>> {
-    let mut stmt = conn.prepare(&format!("SELECT {COLUMNS} FROM items ORDER BY captured_at"))?;
+    let mut stmt = conn.prepare(&format!("SELECT {SELECT} FROM items ORDER BY captured_at"))?;
     let items = stmt.query_map([], from_row)?.collect::<rusqlite::Result<_>>()?;
     Ok(items)
 }
@@ -184,8 +192,8 @@ pub fn all(conn: &Connection) -> Result<Vec<Item>> {
 /// An existing item with the same text or the same original file.
 pub fn find_duplicate(conn: &Connection, body_hash: &str, asset_hash: Option<&str>) -> Result<Option<Item>> {
     let sql = match asset_hash {
-        Some(_) => format!("SELECT {COLUMNS} FROM items WHERE asset_hash = ?1 LIMIT 1"),
-        None => format!("SELECT {COLUMNS} FROM items WHERE body_hash = ?1 AND asset_hash IS NULL LIMIT 1"),
+        Some(_) => format!("SELECT {SELECT} FROM items WHERE asset_hash = ?1 LIMIT 1"),
+        None => format!("SELECT {SELECT} FROM items WHERE body_hash = ?1 AND asset_hash IS NULL LIMIT 1"),
     };
     Ok(conn.query_row(&sql, [asset_hash.unwrap_or(body_hash)], from_row).optional()?)
 }
@@ -193,7 +201,7 @@ pub fn find_duplicate(conn: &Connection, body_hash: &str, asset_hash: Option<&st
 /// An existing link to the same address (its body changes once the page is read, so links
 /// aren't matched by body).
 pub fn find_link(conn: &Connection, url: &str) -> Result<Option<Item>> {
-    let sql = format!("SELECT {COLUMNS} FROM items WHERE kind = 'url' AND source_url = ?1 LIMIT 1");
+    let sql = format!("SELECT {SELECT} FROM items WHERE kind = 'url' AND source_url = ?1 LIMIT 1");
     Ok(conn.query_row(&sql, [url], from_row).optional()?)
 }
 
@@ -249,6 +257,7 @@ pub(crate) fn sample(id: &str, path: &str, body_hash: &str) -> Item {
         file_size: 10,
         status: Status::Pending,
         extracted: None,
+        summary: None,
     }
 }
 

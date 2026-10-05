@@ -12,10 +12,17 @@ pub enum Error {
     Db(#[from] rusqlite::Error),
     #[error("embedding: {0}")]
     Embed(String),
+    #[error("keychain: {0}")]
+    Keychain(#[from] keyring::Error),
+    #[error(transparent)]
+    Llm(#[from] crate::llm::LlmError),
     #[error("clipboard: {0}")]
     Clipboard(#[from] arboard::Error),
     #[error("couldn't encode the image: {0}")]
     Png(#[from] png::EncodingError),
+    /// The day's AI call limit is used up.
+    #[error("the daily AI limit was reached")]
+    DailyLimit,
     /// The UI sent something the command can't use.
     #[error("{0}")]
     Invalid(String),

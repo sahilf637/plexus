@@ -15,6 +15,55 @@ export interface Settings {
   fetchLinks: boolean
   /** Save text copied anywhere, without pasting it into Plexus. */
   watchClipboard: boolean
+  ai: AiSettings
+}
+
+export type ProviderKind = 'openai' | 'anthropic' | 'gemini'
+
+/** The connected AI provider. Its key is not here: it lives in the system keychain. */
+export interface AiSettings {
+  /** Enrich new items (titles, summaries, concepts, typed links). */
+  enabled: boolean
+  /** Which preset was picked (also names the keychain entry). */
+  preset: string
+  kind: ProviderKind
+  baseUrl: string
+  model: string
+  /** The model can read images, so screenshots and photos get described. */
+  vision: boolean
+  /** Most calls per day; 0 means no limit. */
+  dailyLimit: number
+}
+
+export interface AiKeyStatus {
+  hasKey: boolean
+  /** Set when the system keychain couldn't be read. */
+  error: string | null
+}
+
+/** Where AI enrichment stands, shown in the map's header. */
+export interface EnrichStatus {
+  state: 'off' | 'idle' | 'working' | 'paused'
+  /** Items waiting, including the one being read. */
+  pending: number
+  /** Why it is paused. */
+  message: string | null
+}
+
+/** A shared idea that items are tagged with. */
+export interface Concept {
+  id: number
+  name: string
+}
+
+export interface ConceptItems extends Concept {
+  items: string[]
+}
+
+/** Sent when an item's concepts changed. */
+export interface ItemConcepts {
+  id: string
+  concepts: Concept[]
 }
 
 export interface HotkeyStatus {
@@ -62,6 +111,8 @@ export interface Item {
   /** What produced the body: "web@1" once a link's page was read, "web-unreadable@1" if it
    * couldn't be. Absent while a link's page hasn't been read yet. */
   extracted: string | null
+  /** One line about the item, written by the AI provider. */
+  summary: string | null
 }
 
 export interface ItemDetail extends Item {
@@ -72,6 +123,9 @@ export interface ItemDetail extends Item {
   attachments: { name: string; file: string; kind: Kind; size: number | null }[]
   /** Text read out of the original (a PDF's pages, an image's words), apart from the note. */
   extractedText?: string | null
+  /** The title was written by the AI, and can go back to `titleWas`. */
+  titleByAi: boolean
+  titleWas: string | null
 }
 
 /** How sure a link is. */
@@ -80,7 +134,9 @@ export type Tier = 'strong' | 'related' | 'maybe'
 export interface Edge {
   src: string
   dst: string
-  /** "similar" for links found by meaning; typed links come with AI enrichment. */
+  /** "similar" for links found by meaning, "user" for hand-made ones, or a type the AI gave
+   * (supports, contradicts, extends, example_of, related). For typed links `src` is the item the
+   * statement is about: "src extends dst". */
   kind: string
   weight: number
   tier: Tier
@@ -97,6 +153,7 @@ export interface MapData {
   items: Item[]
   edges: Edge[]
   positions: Position[]
+  concepts: ConceptItems[]
 }
 
 /** Items moved to the trash; `batch` restores them. */

@@ -24,8 +24,11 @@
   --map-edge: rgba(91, 91, 214, 0.28);
   --map-edge-maybe: rgba(91, 91, 214, 0.13);
 
-  --radius: 10px;
-  --shadow: 0 8px 30px rgb(0 0 0 / 0.12);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --hover: rgb(0 0 0 / 0.05);
+  --shadow: 0 10px 32px rgb(0 0 0 / 0.12), 0 1px 3px rgb(0 0 0 / 0.06);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.08);
   --font: system-ui, -apple-system, 'Segoe UI', Ubuntu, Cantarell, sans-serif;
   --mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'Ubuntu Mono', monospace;
 }
@@ -43,7 +46,9 @@
     --danger: #ef6b5e;
     --warning: #e0a94a;
     --warning-soft: #3a2f1c;
-    --shadow: 0 8px 30px rgb(0 0 0 / 0.5);
+    --hover: rgb(255 255 255 / 0.07);
+    --shadow: 0 10px 32px rgb(0 0 0 / 0.5), 0 1px 3px rgb(0 0 0 / 0.3);
+    --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
     --kind-text: #8b8bf0;
     --kind-code: #4cc38a;
     --kind-url: #f0a04b;
@@ -80,6 +85,161 @@ button {
   cursor: pointer;
 }
 
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Buttons: .btn is the quiet default, .primary the one main action, .icon-btn a square icon. */
+.btn,
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  white-space: nowrap;
+  transition: background 100ms, border-color 100ms;
+}
+
+.btn {
+  height: 30px;
+  padding: 0 12px;
+}
+
+.icon-btn {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-color: transparent;
+  background: none;
+  color: var(--text-muted);
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.btn.primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: white;
+  font-weight: 500;
+}
+
+.btn.primary:hover:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(1.1);
+}
+
+.btn.danger:hover:not(:disabled),
+.icon-btn.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.input {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  outline: none;
+}
+
+.input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* A pill-shaped on/off switch for settings. */
+.switch {
+  appearance: none;
+  flex-shrink: 0;
+  width: 34px;
+  height: 20px;
+  margin: 0;
+  border-radius: 999px;
+  background: var(--border);
+  position: relative;
+  cursor: pointer;
+  transition: background 120ms;
+}
+
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: var(--shadow-sm);
+  transition: transform 120ms;
+}
+
+.switch:checked {
+  background: var(--accent);
+}
+
+.switch:checked::after {
+  transform: translateX(14px);
+}
+
+/* A row of options where one is on. */
+.segmented {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.segmented button {
+  height: 24px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.segmented button.on {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: var(--border);
+  background-clip: padding-box;
+}
+
 kbd {
   font: 12px var(--mono);
   padding: 1px 6px;
@@ -87,4 +247,5 @@ kbd {
   border-bottom-width: 2px;
   border-radius: 5px;
   background: var(--surface);
+  color: var(--text-muted);
 }

@@ -96,6 +96,8 @@ mime: application/pdf
 pages: 14
 extracted: pdf-text@1          # what produced the body; "edited" once the user changes it
 links: []                      # links the user made by hand
+title_by: ai                   # only when an AI provider renamed the note ("you" once reverted)
+title_was: Pasted note         # the title before that, to put back
 ---
 
 <!-- page 1 -->
@@ -154,10 +156,20 @@ can have many links in each. The map draws strong and related links by default (
 Related · All" in the header); hovering an item shows all of its links. Strong links pull hardest
 in the layout, maybes barely. Files known only by their name never get more than `maybe`.
 
-**Edges** carry: type (`similar`, `supports`, `contradicts`, `example_of`, `extends`, `same_source`,
-`user`), weight, a one-line reason, confidence, provenance (`embedding | llm | user`) and status
-(`proposed` for everything Plexus finds; `rejected` is reserved and unused). Linking is fully
-automatic: there is no approval step, and strength tells the user what to trust.
+**Edges** carry: type (`similar` by meaning, `user` by hand, or one the AI gave: `supports`,
+`contradicts`, `extends`, `example_of`, `related`), weight, a one-line reason, confidence,
+provenance (`embedding | llm | user`) and status (`proposed` for everything Plexus finds;
+`rejected` only for an AI link the user removed, so it never comes back). Linking is fully
+automatic: there is no approval step, and strength tells the user what to trust. For AI links
+`src` is the item the statement is about ("src extends dst"); the panel words it from either end
+("extends" / "extended by"). When a pair has several links, readers get one: by hand, else AI (its
+type and reason, with the stronger tier and weight), else by meaning.
+
+**Structure: two axes.** The *tree* says where an item lives (Area → Topic → Sub-topic → Item), one
+variable-depth tree built from clusters in M3 (depth follows library size; "subject" is just its
+top level). The *mesh* says how items connect: typed item ↔ item links, and item → concept tags,
+which cut across topics. Concepts are chips and a map highlight, not map nodes. Cluster
+membership is never decided by the AI, only named by it.
 
 ### Data model (sketch)
 
@@ -230,7 +242,7 @@ map**: items light up as it reads them.
 |---|---|
 | **M0** | Scaffold; hotkey + capture window; note files + index; text/code/URL captured fully, images/files stored raw; secret detection; duplicates; local embeddings; similarity edges; Sigma map. Fully offline. See [plans/M0.md](plans/M0.md). |
 | **M1** | Curate and extract. Delete items (trash with undo); plain-language link reasons and clearer strength; hand-made links. Extractors: plain-text files (`.md`, `.txt`, code files) read as text, rich HTML → markdown, images (local PaddleOCR PP-OCRv6 small, ~30 MB, swappable for a provider's vision later), PDF/DOCX/EPUB text; clipboard watching (opt-in). Until an item has text it links by name only, capped at `maybe`. No accept/reject flow. See [plans/M1.md](plans/M1.md). |
-| **M2** | LLM enrichment: titles, summaries, concepts, typed edges with reasons. |
+| **M2** | LLM enrichment of new items: titles (marked AI, revertible), summaries, concepts, typed edges with reasons, image descriptions. OpenAI-compatible, Anthropic and Gemini providers; keys in the system keychain. See [plans/M2.md](plans/M2.md). |
 | **M3** | Topics: hierarchical clustering, names, semantic zoom, stable layout. |
 | **M4** | Ask agent with graph tools, citations and live path on the map. |
 | **M5** | Scale: viewport slicing, incremental layout; imports (Obsidian, Notion, bookmarks); MCP server. |

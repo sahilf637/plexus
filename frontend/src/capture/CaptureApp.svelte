@@ -15,7 +15,8 @@
   } from '../lib/api'
   import { isPlainText, resolve, snapshot } from '../lib/paste'
   import { formatBytes, kindLabel } from '../lib/kinds'
-  import type { CaptureResult, Item, ItemLinked, Kind, Preview } from '../lib/types'
+  import Icon from '../components/Icon.svelte'
+  import type { CaptureResult, Preview } from '../lib/types'
 
   /** An image or file waiting to be saved. */
   type Attachment = {
@@ -32,12 +33,10 @@
   type Phase = 'edit' | 'saving' | 'secret' | 'saved' | 'error'
 
   const MAX_ATTACHMENTS = 10
-  const CLOSE_AFTER_SAVE_MS = 1400
-  /** How long to wait for links before closing anyway, and how long to show them. */
-  const WAIT_FOR_LINKS_MS = 3000
-  /** Links have their page read first, which takes longer. */
-  const WAIT_FOR_PAGE_MS = 8000
-  const SHOW_LINKS_MS = 1800
+  /** The confirmation shows briefly, then the window closes; linking carries on in the background
+   * and shows on the map. */
+  const CLOSE_AFTER_SAVE_MS = 600
+  const CLOSE_AFTER_DUPLICATE_MS = 1400
 
   let text = $state('')
   let attachments = $state<Attachment[]>([])
@@ -53,10 +52,6 @@
   let duplicate = $state(false)
   /** Saved alongside, but already in Plexus (when several attachments were saved). */
   let alreadySaved = $state(0)
-  let savedIds = $state<string[]>([])
-  let savedKind = $state<Kind | null>(null)
-  /** Titles of what the saved item linked to, once known. */
-  let linkedTo = $state<string[] | null>(null)
   let errorMessage = $state('')
   let dragOver = $state(false)
   let textarea = $state<HTMLTextAreaElement>()
@@ -89,9 +84,6 @@
     attachments.forEach((a) => a.thumbnail && URL.revokeObjectURL(a.thumbnail))
     attachments = []
     text = ''
-    savedIds = []
-    savedKind = null
-    linkedTo = null
     alreadySaved = 0
     preview = null
     phase = 'edit'
@@ -244,16 +236,12 @@
     phase = 'saved'
     duplicate = saved.length === 0
     alreadySaved = duplicates.length
-    if (duplicate) {
-      savedTitle = duplicates[0]?.title ?? ''
-      closeTimer = setTimeout(close, CLOSE_AFTER_SAVE_MS)
-      return
-    }
-    savedTitle = saved.length === 1 ? saved[0].title : `${saved.length} items saved`
-    savedIds = saved.map((r) => r.id)
-    savedKind = saved.length === 1 ? saved[0].kind : null
-    // Stay open briefly to show what it linked to.
-    closeTimer = setTimeout(close, savedKind === 'url' ? WAIT_FOR_PAGE_MS : WAIT_FOR_LINKS_MS)
+    savedTitle = duplicate
+      ? (duplicates[0]?.title ?? '')
+      : saved.length === 1
+        ? saved[0].title
+        : `${saved.length} items saved`
+    closeTimer = setTimeout(close, duplicate ? CLOSE_AFTER_DUPLICATE_MS : CLOSE_AFTER_SAVE_MS)
   }
 
   function onkeydown(event: KeyboardEvent) {
@@ -281,28 +269,10 @@
     return textarea.selectionStart === 0 && textarea.selectionEnd === 0
   }
 
-  function onItemLinked(event: ItemLinked) {
-    if (phase !== 'saved' || !savedIds.includes(event.id) || linkedTo?.length) return
-    // Only links Plexus is fairly sure about; maybes would read as noise here.
-    linkedTo = event.related.filter((r) => r.tier !== 'maybe').slice(0, 3).map((r) => r.title)
-    if (!linkedTo.length && savedIds.length > 1) return // Another of them may still link.
-    clearTimeout(closeTimer)
-    closeTimer = setTimeout(close, SHOW_LINKS_MS)
-  }
-
-  function onItemUpdated(item: Item) {
-    if (phase === 'saved' && savedIds.length === 1 && item.id === savedIds[0]) {
-      savedTitle = item.title
-      savedKind = null // The page is read; now it's just being linked.
-    }
-  }
-
   onMount(() => {
     reset()
     const unsubscribers = [
       on('capture-opened', reset),
-      on<ItemLinked>('item-linked', onItemLinked),
-      on<Item>('item-updated', onItemUpdated),
       onFileDrop({
         over: (over) => (dragOver = over),
         drop: (paths) => phase === 'edit' && paths.forEach(attachPath),
@@ -325,32 +295,11 @@
   ondragleave={() => (dragOver = false)}
   {ondrop}
 >
-  <header>
-    <span class="title">Add to Plexus</span>
-    {#if chip && phase !== 'saved'}<span class="chip">{chip}</span>{/if}
-  </header>
-
   {#if phase === 'saved'}
     <div class="done">
-      <div class="check" aria-hidden="true">✓</div>
+      <div class="check" aria-hidden="true"><Icon name="check" size={22} /></div>
       <p class="saved-title">{savedTitle}</p>
-      {#if duplicate}
-        <p class="muted">Already in Plexus, so nothing new was saved.</p>
-      {:else}
-        {#if linkedTo === null}
-          <p class="muted">Saved. {savedKind === 'url' ? 'Reading the page…' : 'Finding related items…'}</p>
-        {:else if linkedTo.length}
-          <p class="muted">Linked to</p>
-          <ul class="linked">
-            {#each linkedTo as title}<li>{title}</li>{/each}
-          </ul>
-        {:else}
-          <p class="muted">Saved. Nothing closely related yet; it will link up as you add more.</p>
-        {/if}
-        {#if alreadySaved}
-          <p class="muted">{alreadySaved} {alreadySaved === 1 ? 'was' : 'were'} already in Plexus.</p>
-        {/if}
-      {/if}
+      <p class="muted">{duplicate ? 'Already in Plexus' : alreadySaved ? `Saved · ${alreadySaved} already in Plexus` : 'Saved'}</p>
     </div>
   {:else}
     <div class="body">
@@ -367,7 +316,7 @@
                   {#if a.size !== null}<span class="size">{formatBytes(a.size)}</span>{/if}
                 </div>
               {/if}
-              <button class="remove" onclick={() => remove(a.id)} aria-label={`Remove ${a.name}`}>✕</button>
+              <button class="remove" onclick={() => remove(a.id)} aria-label={`Remove ${a.name}`}><Icon name="close" size={11} /></button>
             </li>
           {/each}
         </ul>
@@ -379,10 +328,10 @@
         bind:value={text}
         oninput={() => phase === 'secret' && (phase = 'edit')}
         placeholder={attachments.length > 1
-          ? 'Add a note to keep these together as one item, or save them separately…'
+          ? 'Add a note to keep these together…'
           : attachments.length
-            ? 'Add a note about this (optional)…'
-            : 'Paste or drop anything, or type…'}
+            ? 'Add a note (optional)'
+            : 'Paste, drop or type anything'}
         spellcheck="false"
         autofocus
         disabled={phase === 'saving'}
@@ -390,12 +339,9 @@
 
       {#if phase === 'secret' || (phase === 'edit' && preview?.secret)}
         <div class="warning" role="alert">
-          <span>
-            This looks like {phase === 'secret' ? secretReason : preview?.secret}. It stays out of
-            Plexus unless you choose to keep it.
-          </span>
+          <span>Looks like {phase === 'secret' ? secretReason : preview?.secret}, so it won't be saved unless you say so.</span>
           {#if phase === 'secret'}
-            <button onclick={() => save(true)}>Save anyway</button>
+            <button class="btn" onclick={() => save(true)}>Save anyway</button>
           {/if}
         </div>
       {/if}
@@ -405,18 +351,18 @@
     </div>
   {/if}
 
-  <footer>
-    {#if phase === 'saved'}
-      <span class="muted">Press any key to close</span>
-    {:else}
-      <span class="hints">
-        <kbd>Enter</kbd> save · <kbd>Shift</kbd>+<kbd>Enter</kbd> new line · <kbd>Esc</kbd> close
+  {#if phase !== 'saved'}
+    <footer>
+      <span class="left">
+        {#if chip}<span class="chip">{chip}</span>{/if}
+        <span class="hints"><kbd>Esc</kbd> close</span>
       </span>
-      <button class="primary" onclick={() => save(phase === 'secret')} disabled={!hasContent || phase === 'saving'}>
+      <button class="btn primary" onclick={() => save(phase === 'secret')} disabled={!hasContent || phase === 'saving'}>
         {phase === 'secret' ? 'Save anyway' : phase === 'saving' ? 'Saving…' : 'Save'}
+        {#if phase === 'edit'}<kbd>↵</kbd>{/if}
       </button>
-    {/if}
-  </footer>
+    </footer>
+  {/if}
 </div>
 
 <style>
@@ -428,7 +374,7 @@
     border: 1px solid var(--border);
     border-radius: var(--radius);
     overflow: hidden;
-    transition: border-color 120ms;
+    transition: border-color 120ms, box-shadow 120ms;
   }
 
   .drag-over {
@@ -436,26 +382,26 @@
     box-shadow: inset 0 0 0 2px var(--accent-soft);
   }
 
-  header,
   footer {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    padding: 10px 14px;
+    padding: 8px 10px 8px 14px;
+    border-top: 1px solid var(--border);
   }
 
-  header {
-    border-bottom: 1px solid var(--border);
-  }
-
-  .title {
-    font-weight: 600;
+  .left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
   }
 
   .chip {
     font-size: 12px;
-    padding: 2px 8px;
+    font-weight: 500;
+    padding: 2px 9px;
     border-radius: 999px;
     background: var(--accent-soft);
     color: var(--accent);
@@ -468,7 +414,7 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
-    padding: 12px 14px 0;
+    padding: 14px 16px 10px;
   }
 
   .tray {
@@ -544,7 +490,6 @@
     border-radius: 50%;
     background: rgb(0 0 0 / 0.6);
     color: white;
-    font-size: 10px;
     opacity: 0;
     transition: opacity 100ms;
   }
@@ -563,7 +508,7 @@
     outline: none;
     background: transparent;
     color: var(--text);
-    font: 14px/1.55 var(--font);
+    font: 15px/1.55 var(--font);
   }
 
   textarea::placeholder {
@@ -575,19 +520,19 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    padding: 8px 10px;
+    padding: 8px 8px 8px 12px;
     border-radius: 8px;
     background: var(--warning-soft);
     color: var(--warning);
     font-size: 13px;
   }
 
-  .warning button {
+  .warning .btn {
     flex-shrink: 0;
-    border: 1px solid currentColor;
-    border-radius: 6px;
+    height: 26px;
+    border-color: currentColor;
     background: none;
-    padding: 3px 8px;
+    color: inherit;
   }
 
   .done {
@@ -602,15 +547,15 @@
   }
 
   .check {
-    width: 40px;
-    height: 40px;
+    width: 44px;
+    height: 44px;
     display: grid;
     place-items: center;
     border-radius: 50%;
     background: var(--accent-soft);
     color: var(--accent);
-    font-size: 20px;
     margin-bottom: 6px;
+    animation: pop 220ms ease-out;
   }
 
   .saved-title {
@@ -626,39 +571,28 @@
     margin: 0;
   }
 
-  .linked {
-    list-style: none;
-    margin: 4px 0 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    max-width: 100%;
-  }
-
-  .linked li {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   .muted,
   .hints {
     color: var(--text-muted);
     font-size: 12px;
   }
 
-  .primary {
-    border: none;
-    border-radius: 8px;
-    padding: 6px 14px;
-    background: var(--accent);
+  .primary kbd {
+    border-color: rgb(255 255 255 / 0.35);
+    background: rgb(255 255 255 / 0.15);
     color: white;
-    font-weight: 500;
   }
 
-  .primary:disabled {
-    opacity: 0.4;
-    cursor: default;
+  @keyframes pop {
+    from {
+      transform: scale(0.7);
+      opacity: 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .check {
+      animation: none;
+    }
   }
 </style>

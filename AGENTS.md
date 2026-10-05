@@ -9,10 +9,12 @@ See [docs/OVERVIEW.md](docs/OVERVIEW.md) for the product and technical design.
 
 ## Status
 
-M0 and M1 are done ([docs/plans/M0.md](docs/plans/M0.md), [docs/plans/M1.md](docs/plans/M1.md)):
+M0, M1 and M2 are done ([M0](docs/plans/M0.md), [M1](docs/plans/M1.md), [M2](docs/plans/M2.md)):
 capture, local linking with plain-language reasons, deleting with undo, hand-made links, text
-extraction (files, HTML, PDF/DOCX/EPUB, OCR) and opt-in clipboard watching. Linking is fully
-automatic; there is no accept/reject flow. Next: M2 (LLM enrichment).
+extraction (files, HTML, PDF/DOCX/EPUB, OCR), opt-in clipboard watching, and optional AI
+enrichment of new items (titles, summaries, concepts, typed links, image descriptions). Linking
+is fully automatic; the only thing a user removes is an AI link or an AI title (undo of an AI
+change). Next: M3 (topics).
 
 ## Principles
 
@@ -64,7 +66,10 @@ Svelte UI: capture window, graph map (Sigma.js), item reader, Ask agent
   `<library>/.plexus/index.db`.
 - **Embeddings:** bge-small-en-v1.5 (int8 ONNX) via `fastembed`, shipped with the app.
 - **LLM providers:** OpenAI-compatible (Groq, OpenRouter, Ollama, LM Studio, …), Anthropic, Gemini.
-  Keys live in the system keychain, never in files or the database.
+  Keys live in the system keychain (`keyring`), never in files or the database. Only new items
+  are enriched (items saved after AI was switched on); `enrich::Lane::Backfill` is the low-priority
+  lane a future "deeper linking" pass will use. A bad key pauses the queue; a daily call limit
+  applies.
 
 ### Planned layout
 
@@ -80,6 +85,8 @@ backend/               Tauri v2 crate `plexus`
   src/db/              SQLite index: migrations, items, edges, search
   src/capture/         kind detection, secrets, dedupe, hotkeys, clipboard
   src/pipeline/        background worker: chunk, embed, link, plain-language link reasons
+  src/llm/             AI providers (OpenAI-compatible, Anthropic, Gemini), one blocking JSON call; keychain keys
+  src/enrich/          T2 queue and worker: bounded context, applying the answer, image descriptions
   src/fetch/           URL fetching + article extraction
   src/extract/         text out of files and images (text, HTML, PDF, DOCX, EPUB, OCR) in the background
 docs/                  product and design docs; plans/ per milestone

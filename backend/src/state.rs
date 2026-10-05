@@ -3,6 +3,7 @@
 use crate::capture::hotkey::Hotkey;
 use crate::db::Db;
 use crate::db::items::Item;
+use crate::enrich::Enricher;
 use crate::extract::worker::{self as extractor, Extractor};
 use crate::fetch::{self, Fetcher};
 use crate::library::Library;
@@ -17,6 +18,7 @@ pub struct AppState {
     pub pipeline: Pipeline,
     pub fetcher: Fetcher,
     pub extractor: Extractor,
+    pub enricher: Enricher,
 }
 
 impl AppState {

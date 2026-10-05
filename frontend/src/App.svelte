@@ -5,6 +5,7 @@
     captureFile,
     captureText,
     deleteItems,
+    enrichStatus,
     getMap,
     hotkeyStatus,
     on,
@@ -16,7 +17,8 @@
   } from './lib/api'
   import { resolve, snapshot } from './lib/paste'
   import { toast } from './lib/toasts.svelte'
-  import type { CaptureResult, Item, ItemLinked, LinksChanged, MapData, Tier } from './lib/types'
+  import type { CaptureResult, Concept, EnrichStatus, Item, ItemConcepts, ItemLinked, LinksChanged, MapData, Tier } from './lib/types'
+  import Icon from './components/Icon.svelte'
   import EmptyState from './components/EmptyState.svelte'
   import ItemPanel from './components/ItemPanel.svelte'
   import MapView from './components/Map.svelte'
@@ -37,15 +39,20 @@
   let marked = $state<string[]>([])
   /** The right-click menu: for this item, at these pixels in the map. */
   let menu = $state<{ id: string; x: number; y: number } | null>(null)
+  /** What each item is about, from the AI. */
+  let conceptsByItem = $state<Record<string, Concept[]>>({})
+  /** The concept whose items are highlighted on the map. */
+  let activeConcept = $state<Concept | null>(null)
+  let aiStatus = $state<EnrichStatus>({ state: 'off', pending: 0, message: null })
   /** Delete's Undo stays on screen longer than other messages. */
   const UNDO_MS = 10000
 
   // Which links the map draws, remembered on this computer.
   const SHOW_KEY = 'plexus.showLinks'
   const showOptions: { tier: Tier; label: string; hint: string }[] = [
-    { tier: 'strong', label: 'Strong', hint: 'Only links Plexus is sure about' },
-    { tier: 'related', label: 'Related', hint: 'Strong and related links' },
-    { tier: 'maybe', label: 'All', hint: 'Every link, including maybes' },
+    { tier: 'strong', label: 'Strong', hint: 'Show only the links Plexus is sure about' },
+    { tier: 'related', label: 'Related', hint: 'Show strong and related links' },
+    { tier: 'maybe', label: 'All', hint: 'Show every link, including maybes' },
   ]
   let lowestTier = $state<Tier>(readShow())
   function readShow(): Tier {
@@ -63,6 +70,20 @@
   }
 
   const itemsById = $derived(new Map((data?.items ?? []).map((item) => [item.id, item])))
+  const conceptItems = $derived(
+    activeConcept ? Object.keys(conceptsByItem).filter((id) => conceptsByItem[id].some((c) => c.id === activeConcept!.id)) : null,
+  )
+  /** What the map keeps bright: search results, else the active concept's items. */
+  const highlight = $derived(matches ?? conceptItems)
+
+  function toggleConcept(concept: Concept) {
+    activeConcept = activeConcept?.id === concept.id ? null : concept
+  }
+
+  function onItemConcepts(event: ItemConcepts) {
+    conceptsByItem[event.id] = event.concepts
+    if (activeConcept && !conceptItems?.length) activeConcept = null
+  }
 
   async function refreshHotkey() {
     const status = await hotkeyStatus()
@@ -71,6 +92,10 @@
 
   async function loadMap() {
     data = await getMap()
+    const byItem: Record<string, Concept[]> = {}
+    for (const concept of data.concepts ?? [])
+      for (const id of concept.items) (byItem[id] ??= []).push({ id: concept.id, name: concept.name })
+    conceptsByItem = byItem
     mapVersion++
   }
 
@@ -245,6 +270,7 @@
   function onkeydown(event: KeyboardEvent) {
     const typing = isTyping(event.target, 'input, textarea')
     if (event.key === 'Escape' && !typing) {
+      activeConcept = null
       selected = null
       marked = []
       menu = null
@@ -261,6 +287,7 @@
   onMount(() => {
     refreshHotkey()
     loadMap()
+    enrichStatus().then((status) => (aiStatus = status))
     // The portal may still be waiting for the user to approve the shortcut at startup.
     const timer = setTimeout(refreshHotkey, 3000)
     const unsubscribers = [
@@ -268,6 +295,8 @@
       on<ItemLinked>('item-linked', onItemLinked),
       on<LinksChanged>('links-changed', onLinksChanged),
       on<Item>('item-updated', onItemUpdated),
+      on<ItemConcepts>('item-concepts', onItemConcepts),
+      on<EnrichStatus>('enrich-status', (status) => (aiStatus = status)),
       on<string[]>('items-deleted', onItemsDeleted),
       on('library-changed', loadMap),
     ]
@@ -288,24 +317,30 @@
 
 <div class="app">
   <header>
-    <span class="brand">Plexus</span>
+    <span class="brand"><span class="mark" aria-hidden="true"></span>Plexus</span>
     {#if data?.items.length}
       <div class="search">
+        <Icon name="search" size={15} />
         <input
           bind:this={searchInput}
           bind:value={query}
           onkeydown={onSearchKey}
-          type="search"
-          placeholder="Search  /"
+          type="text"
+          placeholder="Search"
           aria-label="Search"
         />
-        {#if matches}<span class="count">{matches.length} found</span>{/if}
+        {#if matches}<span class="count">{matches.length}</span>{:else}<kbd>/</kbd>{/if}
       </div>
+      {#if activeConcept}
+        <button class="concept-pill" onclick={() => (activeConcept = null)} title="Stop highlighting (Esc)">
+          {activeConcept.name}
+          <Icon name="close" size={12} />
+        </button>
+      {/if}
     {/if}
     <div class="actions">
       {#if data?.edges.length}
-        <div class="show" role="radiogroup" aria-label="Links shown">
-          <span class="show-label">Links</span>
+        <div class="segmented" role="radiogroup" aria-label="Links shown">
           {#each showOptions as option}
             <button
               role="radio"
@@ -316,12 +351,25 @@
             >
           {/each}
         </div>
-        <button onclick={tidy} disabled={tidying} title="Lay the map out again so related items group together">
-          {tidying ? 'Tidying…' : 'Tidy layout'}
+        <button
+          class="icon-btn"
+          onclick={tidy}
+          disabled={tidying}
+          title="Tidy layout: group related items together"
+          aria-label="Tidy layout"
+        >
+          <Icon name="layout" />
         </button>
       {/if}
-      <button onclick={showCapture}>Add <kbd>{hotkey}</kbd></button>
-      <button onclick={() => (settingsOpen = true)}>Settings</button>
+      {#if aiStatus.state === 'working' || (aiStatus.state === 'idle' && aiStatus.pending > 0)}
+        <span class="ai-pill" title="AI is adding titles, concepts and links"><span class="spin"></span>{aiStatus.pending}</span>
+      {:else if aiStatus.state === 'paused'}
+        <button class="ai-pill warn" title={aiStatus.message ?? ''} onclick={() => (settingsOpen = true)}>AI paused</button>
+      {/if}
+      <button class="btn primary" onclick={showCapture}><Icon name="plus" size={15} />Add <kbd>{hotkey}</kbd></button>
+      <button class="icon-btn" onclick={() => (settingsOpen = true)} title="Settings" aria-label="Settings">
+        <Icon name="settings" />
+      </button>
     </div>
   </header>
 
@@ -332,7 +380,7 @@
           bind:this={mapView}
           {data}
           {selected}
-          {matches}
+          matches={highlight}
           {lowestTier}
           {marked}
           onselect={pick}
@@ -348,13 +396,18 @@
           onselect={(id) => (selected = id)}
           onclose={() => (selected = null)}
           ondelete={() => remove([selected!])}
+          concepts={conceptsByItem[selected] ?? []}
+          activeConcept={activeConcept?.id ?? null}
+          onconcept={toggleConcept}
         />
       {/if}
       {#if marked.length > 1}
         <div class="bar" role="status">
-          <span>{marked.length} selected</span>
-          <button class="danger" onclick={() => remove(marked)}>Delete <kbd>Del</kbd></button>
-          <button onclick={() => (marked = [])}>Clear <kbd>Esc</kbd></button>
+          <span class="n">{marked.length} selected</span>
+          <button class="btn danger" onclick={() => remove(marked)}><Icon name="trash" size={14} />Delete <kbd>Del</kbd></button>
+          <button class="icon-btn" onclick={() => (marked = [])} title="Clear selection (Esc)" aria-label="Clear selection">
+            <Icon name="close" size={14} />
+          </button>
         </div>
       {/if}
       {#if menu}
@@ -363,11 +416,11 @@
         <div class="menu" role="menu" style:left={`${menu.x}px`} style:top={`${menu.y}px`}>
           {#if count === 1 && target}
             <button role="menuitem" onclick={() => { openItemFile(target.id); menu = null }}>
-              {target.assetPath ? 'Open file' : 'Open note'}
+              <span><Icon name="file" size={14} />{target.assetPath ? 'Open file' : 'Open note'}</span>
             </button>
           {/if}
           <button role="menuitem" class="danger" onclick={() => remove(count > 1 ? marked : [menu!.id])}>
-            {count > 1 ? `Delete ${count} items` : 'Delete'} <kbd>Del</kbd>
+            <span><Icon name="trash" size={14} />{count > 1 ? `Delete ${count} items` : 'Delete'}</span> <kbd>Del</kbd>
           </button>
         </div>
       {/if}
@@ -383,6 +436,7 @@
     onclose={() => {
       settingsOpen = false
       refreshHotkey()
+      enrichStatus().then((status) => (aiStatus = status))
     }}
   />
 {/if}
@@ -398,95 +452,128 @@
     display: flex;
     align-items: center;
     gap: 16px;
-    padding: 10px 16px;
+    height: 52px;
+    padding: 0 14px 0 16px;
     border-bottom: 1px solid var(--border);
     background: var(--surface);
   }
 
   .brand {
-    font-weight: 600;
-    letter-spacing: 0.02em;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+  }
+
+  .mark {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 30% 30%, color-mix(in srgb, var(--accent) 60%, white), var(--accent));
+    box-shadow: 0 0 0 3px var(--accent-soft);
   }
 
   .search {
     flex: 1;
-    max-width: 420px;
+    max-width: 380px;
     display: flex;
     align-items: center;
     gap: 8px;
+    height: 32px;
+    padding: 0 10px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    color: var(--text-muted);
+    transition: border-color 100ms, box-shadow 100ms;
+  }
+
+  .search:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+    color: var(--text);
   }
 
   .search input {
     flex: 1;
-    padding: 5px 10px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--surface-2);
+    min-width: 0;
+    border: none;
+    background: none;
     color: var(--text);
     font: inherit;
     outline: none;
   }
 
-  .search input:focus {
-    border-color: var(--accent);
+  .concept-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 26px;
+    padding: 0 8px 0 10px;
+    border: none;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .ai-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 26px;
+    padding: 0 10px;
+    border: none;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .ai-pill.warn {
+    background: var(--warning-soft);
+    color: var(--warning);
+  }
+
+  .spin {
+    width: 10px;
+    height: 10px;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .spin {
+      animation-duration: 3s;
+    }
   }
 
   .count {
-    color: var(--text-muted);
+    color: var(--accent);
     font-size: 12px;
-    white-space: nowrap;
+    font-weight: 600;
   }
 
   .actions {
     margin-left: auto;
     display: flex;
-    gap: 8px;
-  }
-
-  .actions button {
-    white-space: nowrap;
-    display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 5px 10px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--surface-2);
+    gap: 6px;
   }
 
-  .actions button:hover {
-    border-color: var(--accent);
-  }
-
-  .show {
-    display: flex;
-    align-items: center;
-    gap: 2px;
-    padding: 2px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--surface-2);
-  }
-
-  .show-label {
-    padding: 0 6px 0 8px;
-    color: var(--text-muted);
-    font-size: 12px;
-  }
-
-  .actions .show button {
-    padding: 3px 9px;
-    border: none;
-    border-radius: 6px;
-    background: none;
-    color: var(--text-muted);
-    font-size: 13px;
-  }
-
-  .actions .show button.on {
-    background: var(--surface);
-    color: var(--text);
-    box-shadow: 0 1px 2px rgb(0 0 0 / 0.15);
+  .actions .segmented {
+    margin-right: 6px;
   }
 
   .menu,
@@ -495,19 +582,20 @@
     z-index: 5;
     display: flex;
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 10px;
     background: var(--surface);
     box-shadow: var(--shadow);
   }
 
   .menu {
     flex-direction: column;
-    min-width: 160px;
+    min-width: 170px;
     padding: 4px;
   }
 
   .menu button {
     display: flex;
+    align-items: center;
     justify-content: space-between;
     gap: 16px;
     padding: 6px 10px;
@@ -517,27 +605,33 @@
     text-align: left;
   }
 
+  .menu button span {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
   .menu button:hover {
-    background: var(--surface-2);
+    background: var(--hover);
+  }
+
+  .menu .danger:hover {
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
   }
 
   .bar {
     left: 50%;
-    bottom: 16px;
+    bottom: 18px;
     transform: translateX(-50%);
     align-items: center;
-    gap: 12px;
-    padding: 6px 8px 6px 14px;
+    gap: 8px;
+    padding: 6px;
+    padding-left: 14px;
   }
 
-  .bar button {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 4px 10px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--surface-2);
+  .bar .n {
+    margin-right: 6px;
+    font-weight: 500;
   }
 
   .danger {
