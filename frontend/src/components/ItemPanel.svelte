@@ -125,6 +125,14 @@
     return DOMPurify.sanitize(marked.parse(markdown, { async: false }))
   }
 
+  /** The colour of a link's type tag, so it can be read at a glance. */
+  const linkTone: Record<string, string> = {
+    supports: 'var(--kind-code)',
+    contradicts: 'var(--danger)',
+    extends: 'var(--accent)',
+    example_of: 'var(--kind-url)',
+  }
+
   function capturedLabel(iso: string): string {
     return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
   }
@@ -232,7 +240,7 @@
                 <span class="title">{item.title}</span>
                 {#if edge.reason || linkLabel(edge.kind, edge.src === id)}
                   <span class="reason">
-                    {#if linkLabel(edge.kind, edge.src === id)}<span class="type">{linkLabel(edge.kind, edge.src === id)}</span>{/if}
+                    {#if linkLabel(edge.kind, edge.src === id)}<span class="type" style:--tone={linkTone[edge.kind] ?? 'var(--accent)'}>{linkLabel(edge.kind, edge.src === id)}</span>{/if}
                     {edge.reason ?? ''}
                   </span>
                 {/if}
@@ -308,7 +316,6 @@
     padding: 12px 16px 16px;
     overflow-y: auto;
     background: var(--surface);
-    border: 1px solid var(--border);
     border-radius: var(--radius);
     box-shadow: var(--shadow);
   }
@@ -383,19 +390,18 @@
   }
 
   .concepts button {
-    padding: 2px 9px;
-    border: 1px solid var(--border);
+    padding: 2px 10px;
+    border: none;
     border-radius: 999px;
-    background: var(--surface-2);
+    background: var(--fill);
     font-size: 12px;
   }
 
   .concepts button:hover {
-    border-color: var(--accent);
+    background: var(--fill-hover);
   }
 
   .concepts button.on {
-    border-color: var(--accent);
     background: var(--accent-soft);
     color: var(--accent);
   }
@@ -404,8 +410,8 @@
     margin-right: 4px;
     padding: 0 6px;
     border-radius: 999px;
-    background: var(--accent-soft);
-    color: var(--accent);
+    background: color-mix(in srgb, var(--tone) 16%, transparent);
+    color: var(--tone);
     font-size: 11px;
   }
 
@@ -417,9 +423,7 @@
   }
 
   .content {
-    margin-top: 6px;
-    padding-top: 12px;
-    border-top: 1px solid var(--border);
+    margin-top: 10px;
   }
 
   .content img {
@@ -441,9 +445,9 @@
     align-items: center;
     gap: 8px;
     padding: 8px 10px;
-    border: 1px solid var(--border);
+    border: none;
     border-radius: 8px;
-    background: var(--surface-2);
+    background: var(--fill);
     text-align: left;
     color: var(--text-muted);
   }
@@ -502,9 +506,7 @@
   }
 
   section {
-    margin-top: 6px;
-    padding-top: 12px;
-    border-top: 1px solid var(--border);
+    margin-top: 14px;
   }
 
   h3 {
@@ -563,7 +565,7 @@
   }
 
   .add-link {
-    margin-top: 10px;
+    margin-top: 12px;
     height: 28px;
     font-size: 13px;
   }

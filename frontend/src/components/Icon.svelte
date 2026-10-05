@@ -14,6 +14,10 @@
     | 'code'
     | 'image'
     | 'globe'
+    | 'clipboard'
+    | 'sparkles'
+    | 'folder'
+    | 'refresh'
 </script>
 
 <script lang="ts">
@@ -21,6 +25,11 @@
   let { name, size = 16 }: { name: IconName; size?: number } = $props()
 
   const paths: Record<IconName, string> = {
+    clipboard: 'M9 4h6v3H9zM7 5H6a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-1',
+    sparkles:
+      'M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM18 16l.8 2.2L21 19l-2.2.8L18 22l-.8-2.2L15 19l2.2-.8z',
+    folder: 'M3 7a1 1 0 0 1 1-1h5l2 2h8a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z',
+    refresh: 'M20 11a8 8 0 0 0-14.5-4M4 4v3.5h3.5M4 13a8 8 0 0 0 14.5 4M20 20v-3.5h-3.5',
     plus: 'M12 5v14M5 12h14',
     settings:
       'M4 7h10M18 7h2M4 17h2M10 17h10M16 4v6M8 14v6',

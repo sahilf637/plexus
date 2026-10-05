@@ -41,6 +41,13 @@ export interface AiKeyStatus {
   error: string | null
 }
 
+/** A model a provider offers. */
+export interface ModelInfo {
+  id: string
+  /** Reads images. */
+  vision: boolean
+}
+
 /** Where AI enrichment stands, shown in the map's header. */
 export interface EnrichStatus {
   state: 'off' | 'idle' | 'working' | 'paused'

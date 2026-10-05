@@ -388,7 +388,7 @@
     justify-content: space-between;
     gap: 12px;
     padding: 8px 10px 8px 14px;
-    border-top: 1px solid var(--border);
+    background: var(--bg);
   }
 
   .left {
@@ -432,9 +432,8 @@
     flex-shrink: 0;
     width: 76px;
     height: 76px;
-    border: 1px solid var(--border);
     border-radius: 10px;
-    background: var(--surface-2);
+    background: var(--fill);
     overflow: hidden;
   }
 

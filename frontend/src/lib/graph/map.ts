@@ -400,10 +400,10 @@ export class MapController {
 
   private reduceNode(node: string, data: NodeAttributes): Partial<NodeDisplayData> {
     const result: Partial<NodeDisplayData> = { ...data }
+    const focus = this.focused()
     const outsideSearch = this.matches !== null && !this.matches.has(node)
-    const outsideHover =
-      this.hovered !== null && node !== this.hovered && !this.graph.areNeighbors(node, this.hovered)
-    if (outsideSearch || outsideHover) {
+    const outsideFocus = focus !== null && node !== focus && !this.graph.areNeighbors(node, focus)
+    if (outsideSearch || outsideFocus) {
       result.color = this.colors.dim
       result.label = ''
       result.zIndex = 0
@@ -420,11 +420,17 @@ export class MapController {
 
   private reduceEdge(edge: string, data: EdgeDisplayData): Partial<EdgeDisplayData> {
     const [a, b] = this.graph.extremities(edge)
-    if (this.hovered && a !== this.hovered && b !== this.hovered) return { ...data, hidden: true }
+    const focus = this.focused()
+    if (focus && a !== focus && b !== focus) return { ...data, hidden: true }
     if (this.matches && !(this.matches.has(a) && this.matches.has(b))) return { ...data, hidden: true }
     const tier = this.graph.getEdgeAttribute(edge, 'tier') as Tier
-    if (!this.hovered && !tierShown(tier, this.lowestTier)) return { ...data, hidden: true }
+    if (!focus && !tierShown(tier, this.lowestTier)) return { ...data, hidden: true }
     return data
+  }
+
+  /** The item whose neighbourhood stays bright: the one under the pointer, else the selected one. */
+  private focused(): string | null {
+    return this.hovered ?? this.selected
   }
 
   /** The label box for hovered and highlighted nodes, in the app's colours (Sigma's default is
@@ -439,13 +445,16 @@ export class MapController {
     const x = data.x - data.size - padding
     const y = data.y - height / 2
 
+    // A soft shadow lifts the label off the map instead of an outline.
+    context.save()
+    context.shadowColor = 'rgb(0 0 0 / 0.28)'
+    context.shadowBlur = 10
+    context.shadowOffsetY = 2
     context.fillStyle = this.colors.surface
-    context.strokeStyle = this.colors.border
-    context.lineWidth = 1
     context.beginPath()
     context.roundRect(x, y, width + data.size, height, 6)
     context.fill()
-    context.stroke()
+    context.restore()
 
     context.fillStyle = data.color
     context.beginPath()

@@ -79,6 +79,16 @@ pub async fn test_ai(state: State<'_, AppState>) -> Result<()> {
         .map_err(|e| Error::Invalid(e.to_string()))?
 }
 
+/// The chat models the selected provider offers, for the model dropdown. Needs the saved key
+/// (unless the server is local).
+#[tauri::command]
+pub async fn list_ai_models(state: State<'_, AppState>) -> Result<Vec<crate::llm::models::Model>> {
+    let ai = state.settings.get().ai;
+    tauri::async_runtime::spawn_blocking(move || Ok(crate::llm::models::list(&enrich::config_for(&ai)?)?))
+        .await
+        .map_err(|e| Error::Invalid(e.to_string()))?
+}
+
 #[tauri::command]
 pub fn enrich_status(state: State<'_, AppState>) -> enrich::QueueStatus {
     state.enricher.status(state.settings.get().ai.enabled)

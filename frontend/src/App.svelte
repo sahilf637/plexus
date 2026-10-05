@@ -27,6 +27,7 @@
 
   let hotkey = $state('Ctrl+Alt+V')
   let settingsOpen = $state(false)
+  let settingsSection = $state<'general' | 'ai'>('general')
   let data = $state<MapData | null>(null)
   /** Bumped to rebuild the map from scratch (e.g. after the library changed on disk). */
   let mapVersion = $state(0)
@@ -364,10 +365,10 @@
       {#if aiStatus.state === 'working' || (aiStatus.state === 'idle' && aiStatus.pending > 0)}
         <span class="ai-pill" title="AI is adding titles, concepts and links"><span class="spin"></span>{aiStatus.pending}</span>
       {:else if aiStatus.state === 'paused'}
-        <button class="ai-pill warn" title={aiStatus.message ?? ''} onclick={() => (settingsOpen = true)}>AI paused</button>
+        <button class="ai-pill warn" title={aiStatus.message ?? ''} onclick={() => { settingsSection = 'ai'; settingsOpen = true }}>AI paused</button>
       {/if}
       <button class="btn primary" onclick={showCapture}><Icon name="plus" size={15} />Add <kbd>{hotkey}</kbd></button>
-      <button class="icon-btn" onclick={() => (settingsOpen = true)} title="Settings" aria-label="Settings">
+      <button class="icon-btn" onclick={() => { settingsSection = 'general'; settingsOpen = true }} title="Settings" aria-label="Settings">
         <Icon name="settings" />
       </button>
     </div>
@@ -433,6 +434,7 @@
 
 {#if settingsOpen}
   <SettingsDialog
+    section={settingsSection}
     onclose={() => {
       settingsOpen = false
       refreshHotkey()
@@ -454,8 +456,7 @@
     gap: 16px;
     height: 52px;
     padding: 0 14px 0 16px;
-    border-bottom: 1px solid var(--border);
-    background: var(--surface);
+    background: var(--bg);
   }
 
   .brand {
@@ -482,16 +483,14 @@
     gap: 8px;
     height: 32px;
     padding: 0 10px;
-    border: 1px solid transparent;
     border-radius: var(--radius-sm);
-    background: var(--surface-2);
+    background: var(--fill);
     color: var(--text-muted);
-    transition: border-color 100ms, box-shadow 100ms;
+    transition: box-shadow 100ms;
   }
 
   .search:focus-within {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px var(--accent-soft);
+    box-shadow: 0 0 0 2px var(--accent);
     color: var(--text);
   }
 
@@ -519,23 +518,22 @@
     font-weight: 500;
   }
 
+  /* Status, not a button: a dot and a few words. */
   .ai-pill {
     display: inline-flex;
     align-items: center;
     gap: 6px;
     height: 26px;
-    padding: 0 10px;
+    padding: 0 8px;
     border: none;
-    border-radius: 999px;
-    background: var(--accent-soft);
-    color: var(--accent);
+    background: none;
+    color: var(--text-muted);
     font-size: 12px;
-    font-weight: 600;
   }
 
   .ai-pill.warn {
-    background: var(--warning-soft);
     color: var(--warning);
+    font-weight: 600;
   }
 
   .spin {
@@ -581,7 +579,6 @@
     position: absolute;
     z-index: 5;
     display: flex;
-    border: 1px solid var(--border);
     border-radius: 10px;
     background: var(--surface);
     box-shadow: var(--shadow);

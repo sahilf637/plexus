@@ -35,7 +35,6 @@
     align-items: center;
     gap: 12px;
     padding: 9px 10px 9px 14px;
-    border: 1px solid var(--border);
     border-radius: 10px;
     animation: rise 160ms ease-out;
     background: var(--surface);

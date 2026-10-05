@@ -1,7 +1,7 @@
 // In-memory stand-in for the Rust backend, used by `npm run dev:ui`. Detection here is a rough
 // approximation, good enough to exercise the UI; the real rules live in Rust.
 
-import type { AiKeyStatus, CaptureResult, Concept, ConceptItems, Deleted, Edge, EnrichStatus, HotkeyStatus, Item, ItemDetail, ItemLinked, Kind, MapData, Position, Preview, Settings, Tier } from '../types'
+import type { AiKeyStatus, ModelInfo, CaptureResult, Concept, ConceptItems, Deleted, Edge, EnrichStatus, HotkeyStatus, Item, ItemDetail, ItemLinked, Kind, MapData, Position, Preview, Settings, Tier } from '../types'
 import { sampleConcepts, sampleItems } from './samples'
 
 let settings: Settings = {
@@ -236,6 +236,18 @@ const commands: Record<string, Command> = {
     await new Promise((done) => setTimeout(done, 700))
     if (!hasKey && !/ollama|lmstudio|custom/.test(settings.ai.preset))
       throw new Error("the provider didn't accept the key: no key set")
+  },
+  list_ai_models: async (): Promise<ModelInfo[]> => {
+    await new Promise((done) => setTimeout(done, 500))
+    if (!hasKey && !/ollama|lmstudio|custom/.test(settings.ai.preset)) throw new Error("the provider didn't accept the key: no key set")
+    const lists: Record<string, ModelInfo[]> = {
+      openai: [{ id: 'gpt-4.1', vision: true }, { id: 'gpt-4o-mini', vision: true }, { id: 'o3-mini', vision: false }],
+      anthropic: [{ id: 'claude-haiku-4-5-20251001', vision: true }, { id: 'claude-sonnet-5-5', vision: true }],
+      gemini: [{ id: 'gemini-2.5-flash', vision: true }, { id: 'gemma-3-27b-it', vision: false }],
+      groq: [{ id: 'llama-3.3-70b-versatile', vision: false }, { id: 'llama-4-scout', vision: true }],
+      ollama: [{ id: 'llama3.2', vision: false }, { id: 'llava:13b', vision: true }],
+    }
+    return lists[settings.ai.preset] ?? []
   },
   enrich_status: (): EnrichStatus => (settings.ai.enabled ? enrichState : { state: 'off', pending: 0, message: null }),
   enrich_retry: () => setStatus({ state: 'idle', pending: 0, message: null }),

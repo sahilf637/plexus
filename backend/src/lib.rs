@@ -108,6 +108,7 @@ pub fn run() {
             commands::ai_key_status,
             commands::set_ai_key,
             commands::test_ai,
+            commands::list_ai_models,
             commands::enrich_status,
             commands::enrich_retry,
             commands::revert_title,

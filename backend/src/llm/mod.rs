@@ -9,6 +9,7 @@
 pub mod anthropic;
 pub mod gemini;
 pub mod keys;
+pub mod models;
 pub mod openai;
 
 use std::sync::LazyLock;
@@ -108,15 +109,35 @@ pub(crate) struct Reply {
 }
 
 pub(crate) fn post(url: &str, headers: &[(&str, &str)], body: &Value) -> Result<Reply, LlmError> {
+    send(url, headers, Some(body))
+}
+
+pub(crate) fn get(url: &str, headers: &[(&str, &str)]) -> Result<Reply, LlmError> {
+    send(url, headers, None)
+}
+
+fn send(url: &str, headers: &[(&str, &str)], body: Option<&Value>) -> Result<Reply, LlmError> {
     static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
         // Status errors are read from the body, which says what's wrong.
         ureq::Agent::config_builder().timeout_global(Some(TIMEOUT)).http_status_as_error(false).build().into()
     });
     let mut call = AGENT.post(url).header("content-type", "application/json");
-    for (name, value) in headers {
-        call = call.header(*name, *value);
+    let mut list = AGENT.get(url);
+    let mut response = match body {
+        Some(body) => {
+            for (name, value) in headers {
+                call = call.header(*name, *value);
+            }
+            call.send(body.to_string())
+        }
+        None => {
+            for (name, value) in headers {
+                list = list.header(*name, *value);
+            }
+            list.call()
+        }
     }
-    let mut response = call.send(body.to_string()).map_err(|e| LlmError::Unavailable(e.to_string()))?;
+    .map_err(|e| LlmError::Unavailable(e.to_string()))?;
     let status = response.status().as_u16();
     let retry_after = response
         .headers()
@@ -303,5 +324,16 @@ mod http_tests {
         assert!(matches!(ask(&config(ProviderKind::OpenAi, "http://127.0.0.1:1", None)), Err(LlmError::Unavailable(_))));
         let (base, _) = serve(vec![(429, "{}".into())]);
         assert!(matches!(ask(&config(ProviderKind::OpenAi, &base, None)), Err(LlmError::RateLimited(_))));
+    }
+
+    #[test]
+    fn lists_models_with_the_key_and_sorts_them() {
+        let reply = json!({ "data": [{ "id": "zeta" }, { "id": "alpha" }, { "id": "text-embedding-x" }] });
+        let (base, seen) = serve(vec![(200, reply.to_string()), (401, json!({ "error": { "message": "nope" } }).to_string())]);
+        let config = config(ProviderKind::OpenAi, &format!("{base}/v1"), Some("k"));
+        let models = models::list(&config).unwrap();
+        assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["alpha", "zeta"]);
+        assert!(seen.lock().unwrap()[0].0.starts_with("GET /v1/models"));
+        assert_eq!(models::list(&config).unwrap_err(), LlmError::Auth("nope".into()));
     }
 }

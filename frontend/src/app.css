@@ -1,10 +1,17 @@
 :root {
   color-scheme: light dark;
 
-  --bg: #f7f7f8;
+  --bg: #f4f4f6;
   --surface: #ffffff;
-  --surface-2: #f0f0f2;
-  --border: #e2e2e6;
+  --surface-2: #eeeef1;
+  /* A grouped block of settings or content on a surface. */
+  --group: #f6f6f8;
+  /* Fills for inputs and buttons: translucent, so they work on any surface. */
+  --fill: rgb(0 0 0 / 0.055);
+  --fill-hover: rgb(0 0 0 / 0.09);
+  /* The few hairlines left; faint on purpose. */
+  --line: rgb(0 0 0 / 0.07);
+  --border: #e4e4e8;
   --text: #1c1c21;
   --text-muted: #6b6b76;
   --accent: #5b5bd6;
@@ -35,10 +42,14 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #141417;
-    --surface: #1c1c21;
-    --surface-2: #25252b;
-    --border: #2f2f37;
+    --bg: #0f0f12;
+    --surface: #1a1a1f;
+    --surface-2: #26262d;
+    --group: #212127;
+    --fill: rgb(255 255 255 / 0.07);
+    --fill-hover: rgb(255 255 255 / 0.115);
+    --line: rgb(255 255 255 / 0.07);
+    --border: #2c2c34;
     --text: #ececf1;
     --text-muted: #9a9aa6;
     --accent: #8b8bf0;
@@ -90,18 +101,19 @@ button {
   outline-offset: 1px;
 }
 
-/* Buttons: .btn is the quiet default, .primary the one main action, .icon-btn a square icon. */
+/* Buttons: .btn is the quiet default, .primary the one main action, .icon-btn a square icon.
+ * No outlines: a soft fill is enough. */
 .btn,
 .icon-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  border: 1px solid var(--border);
+  border: none;
   border-radius: var(--radius-sm);
-  background: var(--surface);
+  background: var(--fill);
   white-space: nowrap;
-  transition: background 100ms, border-color 100ms;
+  transition: background 100ms;
 }
 
 .btn {
@@ -113,13 +125,12 @@ button {
   width: 30px;
   height: 30px;
   padding: 0;
-  border-color: transparent;
   background: none;
   color: var(--text-muted);
 }
 
 .btn:hover:not(:disabled) {
-  background: var(--surface-2);
+  background: var(--fill-hover);
 }
 
 .icon-btn:hover:not(:disabled) {
@@ -128,7 +139,6 @@ button {
 }
 
 .btn.primary {
-  border-color: transparent;
   background: var(--accent);
   color: white;
   font-weight: 500;
@@ -154,17 +164,21 @@ button:disabled {
   width: 100%;
   height: 32px;
   padding: 0 10px;
-  border: 1px solid var(--border);
+  border: none;
   border-radius: var(--radius-sm);
-  background: var(--surface-2);
+  background: var(--fill);
   color: var(--text);
   font: inherit;
   outline: none;
 }
 
+.input:hover {
+  background: var(--fill-hover);
+}
+
 .input:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  background: var(--fill);
+  box-shadow: 0 0 0 2px var(--accent);
 }
 
 /* A pill-shaped on/off switch for settings. */
@@ -175,7 +189,7 @@ button:disabled {
   height: 20px;
   margin: 0;
   border-radius: 999px;
-  background: var(--border);
+  background: var(--fill-hover);
   position: relative;
   cursor: pointer;
   transition: background 120ms;
@@ -208,8 +222,7 @@ button:disabled {
   padding: 2px;
   gap: 2px;
   border-radius: var(--radius-sm);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
+  background: var(--fill);
 }
 
 .segmented button {
@@ -243,9 +256,12 @@ button:disabled {
 kbd {
   font: 12px var(--mono);
   padding: 1px 6px;
-  border: 1px solid var(--border);
-  border-bottom-width: 2px;
   border-radius: 5px;
-  background: var(--surface);
+  background: var(--fill);
   color: var(--text-muted);
+}
+
+.btn.primary kbd {
+  background: rgb(255 255 255 / 0.2);
+  color: white;
 }
