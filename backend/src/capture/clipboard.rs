@@ -5,6 +5,15 @@ use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 
+/// The clipboard text, or `None` when it holds no (non-blank) text.
+pub fn text() -> Result<Option<String>> {
+    match arboard::Clipboard::new()?.get_text() {
+        Ok(text) if !text.trim().is_empty() => Ok(Some(text)),
+        Ok(_) | Err(arboard::Error::ContentNotAvailable) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// The clipboard image as PNG bytes, or `None` when the clipboard holds no image.
 pub fn image_png() -> Result<Option<Vec<u8>>> {
     let image = match arboard::Clipboard::new()?.get_image() {

@@ -1,7 +1,7 @@
 // The only module that talks to the Rust side. Outside Tauri (`npm run dev:ui`) every call
 // goes to an in-memory mock instead, so the UI can be built in a plain browser.
 
-import type { CaptureResult, HotkeyStatus, Preview, Settings } from './types'
+import type { CaptureResult, HotkeyStatus, Item, ItemDetail, Preview, Settings } from './types'
 import * as mock from './mock/backend'
 
 export const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
@@ -46,6 +46,9 @@ export const capturePreview = (text: string) => call<Preview>('capture_preview',
 export const captureText = (text: string, force = false) =>
   call<CaptureResult>('capture_text', { text, force })
 export const captureFile = (path: string) => call<CaptureResult>('capture_file', { path })
+
+export const listItems = () => call<Item[]>('list_items')
+export const getItem = (id: string) => call<ItemDetail>('get_item', { id })
 
 /** Pasted images and files go over as raw bytes, not JSON. */
 export async function captureBytes(blob: Blob, name: string): Promise<CaptureResult> {

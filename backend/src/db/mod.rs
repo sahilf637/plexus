@@ -11,9 +11,6 @@ use rusqlite::Connection;
 
 use crate::error::Result;
 
-/// Embedding size of the bundled model (bge-small-en-v1.5).
-pub const EMBEDDING_DIMENSIONS: usize = 384;
-
 /// Each entry upgrades the schema by one version (`PRAGMA user_version`).
 const MIGRATIONS: &[&str] = &[r#"
     CREATE TABLE items (
@@ -118,9 +115,13 @@ fn register_sqlite_vec() {
         // SAFETY: `sqlite3_vec_init` is a valid SQLite extension entry point; SQLite calls it
         // with the documented arguments for each new connection.
         unsafe {
-            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<*const (), _>(
-                sqlite_vec::sqlite3_vec_init as *const (),
-            )));
+            type EntryPoint = unsafe extern "C" fn(
+                *mut rusqlite::ffi::sqlite3,
+                *mut *mut std::ffi::c_char,
+                *const rusqlite::ffi::sqlite3_api_routines,
+            ) -> std::ffi::c_int;
+            let entry = std::mem::transmute::<*const (), EntryPoint>(sqlite_vec::sqlite3_vec_init as *const ());
+            rusqlite::ffi::sqlite3_auto_extension(Some(entry));
         }
     });
 }
@@ -144,7 +145,6 @@ mod tests {
             assert!(version.starts_with('v'));
             let schema: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
             assert_eq!(schema as usize, MIGRATIONS.len());
-            assert_eq!(EMBEDDING_DIMENSIONS, 384);
             Ok(())
         })
         .unwrap();

@@ -1,13 +1,40 @@
 // In-memory stand-in for the Rust backend, used by `npm run dev:ui`. Detection here is a rough
 // approximation, good enough to exercise the UI; the real rules live in Rust.
 
-import type { CaptureResult, HotkeyStatus, Kind, Preview, Settings } from '../types'
+import type { CaptureResult, HotkeyStatus, Item, ItemDetail, Kind, Preview, Settings } from '../types'
 
 let settings: Settings = {
   libraryPath: '~/Plexus',
   hotkey: 'Ctrl+Alt+V',
   hotkeyAction: 'openCapture',
   startAtLogin: true,
+}
+
+const items: ItemDetail[] = []
+
+function addItem(title: string, kind: Kind, body: string): CaptureResult {
+  const item: ItemDetail = {
+    id: crypto.randomUUID(),
+    path: `items/mock/${title.toLowerCase().replace(/\W+/g, '-')}.md`,
+    kind,
+    title,
+    sourceUrl: kind === 'url' ? body : null,
+    language: null,
+    capturedAt: new Date().toISOString(),
+    bodyHash: body,
+    assetPath: null,
+    assetHash: null,
+    mime: null,
+    size: null,
+    status: 'pending',
+    body,
+    assetFile: null,
+  }
+  const existing = items.find((i) => i.bodyHash === body)
+  if (existing) return { status: 'duplicate', id: existing.id, title: existing.title }
+  items.push(item)
+  emit('item-added', item)
+  return { status: 'saved', id: item.id, title, kind }
 }
 
 type Handler = (payload: never) => void
@@ -57,16 +84,22 @@ const commands: Record<string, Command> = {
   capture_text: (args): CaptureResult => {
     const p = preview(args.text as string)
     if (p.secret && !args.force) return { status: 'secret', reason: p.secret }
-    return { status: 'saved', id: crypto.randomUUID(), title: p.title, kind: p.kind }
+    return addItem(p.title, p.kind, args.text as string)
   },
   capture_file: (args): CaptureResult => {
     const name = String(args.path).split('/').pop() ?? 'file'
-    return { status: 'saved', id: crypto.randomUUID(), title: name, kind: 'file' }
+    return addItem(name, 'file', String(args.path))
   },
   capture_bytes: (_, headers): CaptureResult => {
     const name = decodeURIComponent(headers?.['x-name'] ?? 'file')
     const kind = headers?.['x-mime']?.startsWith('image/') ? 'image' : 'file'
-    return { status: 'saved', id: crypto.randomUUID(), title: name, kind }
+    return addItem(name, kind, `${name}-${Date.now()}`)
+  },
+  list_items: (): Item[] => items,
+  get_item: (args): ItemDetail => {
+    const item = items.find((i) => i.id === args.id)
+    if (!item) throw new Error(`no item ${args.id}`)
+    return item
   },
 }
 

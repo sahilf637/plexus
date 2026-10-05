@@ -11,9 +11,10 @@ use crate::windows;
 pub fn create(app: &AppHandle) -> Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Plexus", true, None::<&str>)?;
     let capture = MenuItem::with_id(app, "capture", "Add something…", true, None::<&str>)?;
+    let save_clipboard = MenuItem::with_id(app, "save-clipboard", "Save clipboard", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Plexus", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&open, &capture, &separator, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &capture, &save_clipboard, &separator, &quit])?;
 
     let mut tray = TrayIconBuilder::with_id("plexus")
         .tooltip("Plexus")
@@ -21,6 +22,10 @@ pub fn create(app: &AppHandle) -> Result<()> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => windows::show_main(app),
             "capture" => windows::show_capture(app),
+            "save-clipboard" => {
+                let app = app.clone();
+                std::thread::spawn(move || crate::capture::save_clipboard(&app));
+            }
             "quit" => app.exit(0),
             _ => {}
         });

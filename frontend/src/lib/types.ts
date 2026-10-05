@@ -36,3 +36,29 @@ export type CaptureResult =
   | { status: 'saved'; id: string; title: string; kind: Kind }
   | { status: 'duplicate'; id: string; title: string }
   | { status: 'secret'; reason: string }
+
+export type ItemStatus = 'pending' | 'linked' | 'unlinkable' | 'failed'
+
+/** An item in the index (one note file). */
+export interface Item {
+  id: string
+  /** Note file, relative to the library folder. */
+  path: string
+  kind: Kind
+  title: string
+  sourceUrl: string | null
+  language: string | null
+  capturedAt: string
+  bodyHash: string
+  assetPath: string | null
+  assetHash: string | null
+  mime: string | null
+  size: number | null
+  status: ItemStatus
+}
+
+export interface ItemDetail extends Item {
+  body: string
+  /** Absolute path of the original file, if any. */
+  assetFile: string | null
+}

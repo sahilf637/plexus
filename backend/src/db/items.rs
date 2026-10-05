@@ -179,6 +179,7 @@ pub fn file_states(conn: &Connection) -> Result<HashMap<String, FileState>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+#[cfg(test)]
 pub fn count(conn: &Connection) -> Result<usize> {
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM items", [], |row| row.get(0))?;
     Ok(count as usize)

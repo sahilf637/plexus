@@ -70,6 +70,8 @@ pub fn run() {
             commands::capture_text,
             commands::capture_file,
             commands::capture_bytes,
+            commands::list_items,
+            commands::get_item,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Plexus");

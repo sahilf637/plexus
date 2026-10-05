@@ -62,6 +62,18 @@
     </section>
 
     <section>
+      <h3>When the shortcut is pressed</h3>
+      <label class="row">
+        <input type="radio" name="hotkey-action" checked={settings.hotkeyAction === 'openCapture'} onchange={() => update({ hotkeyAction: 'openCapture' })} />
+        Open the capture window, to paste, drop or type
+      </label>
+      <label class="row">
+        <input type="radio" name="hotkey-action" checked={settings.hotkeyAction === 'saveClipboard'} onchange={() => update({ hotkeyAction: 'saveClipboard' })} />
+        Save the clipboard straight away, with a notification
+      </label>
+    </section>
+
+    <section>
       <h3>Start at login</h3>
       <label class="row">
         <input type="checkbox" checked={settings.startAtLogin} onchange={(e) => update({ startAtLogin: e.currentTarget.checked })} />

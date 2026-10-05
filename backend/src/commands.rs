@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{AppHandle, State};
 
-use crate::capture::{self, CaptureResult, Preview, clipboard, hotkey};
+use crate::capture::{self, CaptureResult, Preview, clipboard, hotkey, save};
+use crate::db::items::{self, Item};
 use crate::error::{Error, Result};
 use crate::settings::Settings;
 use crate::state::AppState;
@@ -67,19 +68,19 @@ pub fn capture_preview(text: String) -> Preview {
 }
 
 #[tauri::command]
-pub fn capture_text(text: String, force: bool) -> CaptureResult {
-    capture::save_text(&text, force)
+pub fn capture_text(app: AppHandle, state: State<'_, AppState>, text: String, force: bool) -> Result<CaptureResult> {
+    timed("text", || save::text(&state.library, &state.db, &text, force)).map(|saved| capture::announce(&app, saved))
 }
 
-/// Files dropped onto a window, by path.
+/// Files dropped onto a window, or copied in a file manager, by path.
 #[tauri::command]
-pub fn capture_file(path: PathBuf) -> CaptureResult {
-    capture::save_file(&path)
+pub fn capture_file(app: AppHandle, state: State<'_, AppState>, path: PathBuf) -> Result<CaptureResult> {
+    timed("file", || save::file_from_disk(&state.library, &state.db, &path)).map(|saved| capture::announce(&app, saved))
 }
 
 /// Pasted images and files, sent as raw bytes with `x-name` / `x-mime` headers.
 #[tauri::command]
-pub fn capture_bytes(request: Request<'_>) -> Result<CaptureResult> {
+pub fn capture_bytes(app: AppHandle, state: State<'_, AppState>, request: Request<'_>) -> Result<CaptureResult> {
     let InvokeBody::Raw(bytes) = request.body() else {
         return Err(Error::Invalid("expected the file's bytes".into()));
     };
@@ -89,5 +90,37 @@ pub fn capture_bytes(request: Request<'_>) -> Result<CaptureResult> {
         "" => capture::mime_from_name(&name).to_string(),
         mime => mime.to_string(),
     };
-    Ok(capture::save_bytes(&name, &mime, bytes))
+    timed("bytes", || save::file(&state.library, &state.db, &name, &mime, bytes)).map(|saved| capture::announce(&app, saved))
+}
+
+/// One item with its note body, for the detail panel.
+#[derive(serde::Serialize)]
+pub struct ItemDetail {
+    #[serde(flatten)]
+    item: Item,
+    body: String,
+    /// Absolute path of the original file, if any, for opening or previewing it.
+    asset_file: Option<PathBuf>,
+}
+
+#[tauri::command]
+pub fn get_item(state: State<'_, AppState>, id: String) -> Result<ItemDetail> {
+    let item = state.db.with(|conn| items::get(conn, &id))?.ok_or_else(|| Error::Invalid(format!("no item {id}")))?;
+    let body = state.library.read_note(&state.library.absolute(&item.path))?.body;
+    let asset_file = item.asset_path.as_deref().map(|p| state.library.absolute(p));
+    Ok(ItemDetail { item, body, asset_file })
+}
+
+/// Everything in the index, for the map.
+#[tauri::command]
+pub fn list_items(state: State<'_, AppState>) -> Result<Vec<Item>> {
+    state.db.with(|conn| items::all(conn))
+}
+
+/// Saving is meant to stay well under 50 ms; log how long it takes.
+fn timed<T>(what: &str, save: impl FnOnce() -> Result<T>) -> Result<T> {
+    let started = std::time::Instant::now();
+    let result = save();
+    tracing::debug!(what, elapsed = ?started.elapsed(), ok = result.is_ok(), "capture saved");
+    result
 }

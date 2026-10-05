@@ -8,6 +8,7 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
+use crate::settings::HotkeyAction;
 use crate::state::AppState;
 use crate::windows;
 
@@ -67,7 +68,14 @@ pub fn configure(app: &AppHandle) {
 /// The shortcut fired. `activation_token` lets the desktop hand focus to our window (Wayland).
 fn fired(app: &AppHandle, activation_token: Option<String>) {
     tracing::debug!(has_activation_token = activation_token.is_some(), "global shortcut pressed");
-    windows::show_capture_activated(app, activation_token);
+    match app.state::<AppState>().settings.get().hotkey_action {
+        HotkeyAction::OpenCapture => windows::show_capture_activated(app, activation_token),
+        HotkeyAction::SaveClipboard => {
+            let app = app.clone();
+            // Off the shortcut's thread: reading the clipboard and writing files take a moment.
+            std::thread::spawn(move || super::save_clipboard(&app));
+        }
+    }
 }
 
 fn uses_portal() -> bool {

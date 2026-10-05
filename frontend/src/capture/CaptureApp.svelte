@@ -36,6 +36,8 @@
   let phase = $state<Phase>('edit')
   let secretReason = $state('')
   let savedTitle = $state('')
+  /** The capture was already in Plexus, so nothing new was saved. */
+  let duplicate = $state(false)
   let errorMessage = $state('')
   let dragOver = $state(false)
   let textarea = $state<HTMLTextAreaElement>()
@@ -177,6 +179,7 @@
         return
       }
       savedTitle = result.title
+      duplicate = result.status === 'duplicate'
       phase = 'saved'
       closeTimer = setTimeout(close, CLOSE_AFTER_SAVE_MS)
     } catch (e) {
@@ -244,7 +247,9 @@
     <div class="done">
       <div class="check" aria-hidden="true">✓</div>
       <p class="saved-title">{savedTitle}</p>
-      <p class="muted">Saved. Plexus is linking it to your other items.</p>
+      <p class="muted">
+        {duplicate ? 'Already in Plexus, so nothing new was saved.' : 'Saved. Plexus is linking it to your other items.'}
+      </p>
     </div>
   {:else}
     <div class="body">
