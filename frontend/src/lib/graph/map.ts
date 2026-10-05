@@ -106,6 +106,15 @@ const FOLLOW_MIN = 0.008
 /** How far past the outermost items the view may go (in view units; the whole map is about 1). */
 const EDGE_ROOM = 0.08
 
+/** Magnetic hover: the cursor counts as touching the nearest item when it is within the dot plus
+ * this many pixels, and clearly nearer to it than to the runner-up (closer than this fraction of
+ * the runner-up's distance). That is what keeps the reach small where items crowd together and
+ * generous where one stands alone. The item already touched is held on to more firmly. */
+const MAGNET_REACH = 10
+const MAGNET_CLEAR = 0.6
+const MAGNET_STICKY_REACH = 15
+const MAGNET_STICKY_CLEAR = 0.85
+
 /** One scroll event never counts for more than this many pixels, so a burst can't leap. */
 const MAX_PIXELS = 60
 /** How quickly the view catches up with the zoom asked for (time to cover ~63% of the gap). */
@@ -171,24 +180,20 @@ export class MapController {
       edgeReducer: (edge, data) => this.reduceEdge(edge, data as unknown as EdgeDisplayData),
     })
 
-    this.sigma.on('enterNode', ({ node }) => {
-      this.hovered = node
-      container.style.cursor = 'pointer'
-      this.sigma.refresh({ skipIndexation: true })
-    })
-    this.sigma.on('leaveNode', () => {
-      this.hovered = null
-      container.style.cursor = ''
-      this.sigma.refresh({ skipIndexation: true })
-    })
-    this.sigma.on('clickNode', ({ node, event }) => this.events.select(node, 'shiftKey' in event.original && event.original.shiftKey))
-    this.sigma.on('clickStage', () => this.events.select(null))
+    // Which item the cursor touches is worked out in `retarget` (it reaches a little past the
+    // dot), so Sigma's own enter/leave events are not used; clicks go to that item too.
+    this.sigma.on('clickNode', ({ node, event }) => this.click(node, event))
+    this.sigma.on('clickStage', ({ event }) => this.click(null, event))
     this.sigma.on('rightClickNode', ({ node, event }) => {
       event.original.preventDefault()
-      this.events.menu(node, event.x, event.y)
+      this.events.menu(this.touched(event, node) ?? node, event.x, event.y)
     })
-    // The webview's own menu (Reload, Inspect…) has no place on the map.
-    this.sigma.on('rightClickStage', ({ event }) => event.original.preventDefault())
+    this.sigma.on('rightClickStage', ({ event }) => {
+      // The webview's own menu (Reload, Inspect…) has no place on the map.
+      event.original.preventDefault()
+      const target = this.touched(event, null)
+      if (target) this.events.menu(target, event.x, event.y)
+    })
     this.themeQuery.addEventListener('change', this.onThemeChange)
     this.resizeObserver.observe(container)
     // Captured, so it runs before Sigma's own wheel zoom, which it replaces.
@@ -235,6 +240,7 @@ export class MapController {
     const rect = this.container.getBoundingClientRect()
     this.pointer = { x: event.clientX - rect.left, y: event.clientY - rect.top }
     this.dragging = event.buttons !== 0
+    this.retarget()
     if (this.navigation.edgeScroll && !this.edgeFrame) {
       this.measure()
       this.edgeLast = performance.now()
@@ -244,6 +250,56 @@ export class MapController {
 
   private onpointerleave = () => {
     this.pointer = null
+    this.retarget()
+  }
+
+  /** The item a click or right-click is for: the one already shown as touched, else whatever
+   * is within reach of where the click landed (so it doesn't depend on a move before it). */
+  private touched(at: { x: number; y: number }, node: string | null): string | null {
+    return this.hovered ?? this.itemAt(at) ?? node
+  }
+
+  private click(node: string | null, event: { x: number; y: number; original: MouseEvent | TouchEvent }) {
+    this.events.select(this.touched(event, node), 'shiftKey' in event.original && event.original.shiftKey)
+  }
+
+  /** The item the cursor counts as touching, if any; see `MAGNET_REACH`. */
+  private itemAt(pointer: { x: number; y: number }): string | null {
+    let nearest: string | null = null
+    let nearestDistance = Infinity
+    let nearestRadius = 0
+    let runnerUp = Infinity
+    this.graph.forEachNode((id) => {
+      const display = this.sigma.getNodeDisplayData(id)
+      if (!display || display.hidden) return
+      const at = this.sigma.framedGraphToViewport(display)
+      const distance = Math.hypot(at.x - pointer.x, at.y - pointer.y)
+      if (distance < nearestDistance) {
+        runnerUp = nearestDistance
+        nearest = id
+        nearestDistance = distance
+        nearestRadius = this.sigma.scaleSize(display.size)
+      } else if (distance < runnerUp) {
+        runnerUp = distance
+      }
+    })
+    if (nearest === null) return null
+    const radius = Math.max(nearestRadius, 3)
+    // On the dot itself: always that item.
+    if (nearestDistance <= radius) return nearest
+    const held = nearest === this.hovered
+    const reach = radius + (held ? MAGNET_STICKY_REACH : MAGNET_REACH)
+    const clear = nearestDistance < (held ? MAGNET_STICKY_CLEAR : MAGNET_CLEAR) * runnerUp
+    return nearestDistance <= reach && clear ? nearest : null
+  }
+
+  /** Works out which item is touched now (the pointer moved, or the map moved under it). */
+  private retarget() {
+    const found = this.pointer ? this.itemAt(this.pointer) : null
+    if (found === this.hovered) return
+    this.hovered = found
+    this.container.style.cursor = found ? 'pointer' : ''
+    this.sigma.refresh({ skipIndexation: true })
   }
 
   /** The speed, as a fraction of the top one, for a cursor at `position` along a side of length
@@ -252,17 +308,6 @@ export class MapController {
     const distance = Math.min(1, Math.abs(position - size / 2) / (size / 2))
     const speed = (Math.exp(FOLLOW_CURVE * distance) - 1) / (Math.exp(FOLLOW_CURVE) - 1)
     return position < size / 2 ? -speed : speed
-  }
-
-  /** Whether an item is under the cursor. Sigma only reports hovers when the mouse moves, so an
-   * item that drifts under a still cursor is found here. */
-  private touchingItem(pointer: { x: number; y: number }): boolean {
-    return this.graph.someNode((id) => {
-      const display = this.sigma.getNodeDisplayData(id)
-      if (!display || display.hidden) return false
-      const at = this.sigma.framedGraphToViewport(display)
-      return Math.hypot(at.x - pointer.x, at.y - pointer.y) <= Math.max(this.sigma.scaleSize(display.size), 4) + 3
-    })
   }
 
   private edgeStep = (now: number) => {
@@ -280,7 +325,8 @@ export class MapController {
     if (!dx && !dy) return
     // Resting on an item holds the view still, so it can be read or clicked; holding a button is
     // dragging the map by hand. Either way keep watching, and move on again once it's free.
-    if (!this.dragging && !this.hovered && !this.touchingItem(pointer)) {
+    this.retarget()
+    if (!this.dragging && !this.hovered) {
       const step = FOLLOW_SPEED * seconds
       const to = this.sigma.viewportToFramedGraph({ x: width / 2 + dx * width * step, y: height / 2 + dy * height * step })
       this.sigma.getCamera().setState(this.inside(to))
@@ -338,6 +384,7 @@ export class MapController {
       y: camera.y + ((under.y - camera.y) / camera.ratio) * k,
       ratio,
     })
+    this.retarget()
     if (done) this.zoomAim = null
     else this.zoomFrame = requestAnimationFrame(this.zoomStep)
   }
@@ -581,6 +628,7 @@ export class MapController {
     const dy = (this.panHeld.has('down') ? 1 : 0) - (this.panHeld.has('up') ? 1 : 0)
     const to = this.sigma.viewportToFramedGraph({ x: width / 2 + dx * width * step, y: height / 2 + dy * height * step })
     this.sigma.getCamera().setState(this.inside(to))
+    this.retarget()
     this.panFrame = requestAnimationFrame(this.panStep)
   }
 
