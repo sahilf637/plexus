@@ -1,23 +1,6 @@
 <script lang="ts">
-  // What a new library shows instead of the map: what Plexus does, and the two ways to start.
-  import { onMount } from 'svelte'
-  import { getSettings } from '../lib/api'
-
+  // What a new library shows instead of the map: one way in, and a hint at the other.
   let { hotkey, onadd }: { hotkey: string; onadd: () => void } = $props()
-
-  let library = $state('')
-  onMount(async () => {
-    const path = (await getSettings()).libraryPath
-    library = path.replace(/^\/(home|Users)\/[^/]+/, '~')
-  })
-
-  const kinds = [
-    ['text', 'Notes'],
-    ['url', 'Links'],
-    ['code', 'Code'],
-    ['image', 'Screenshots'],
-    ['file', 'Files'],
-  ]
 </script>
 
 <div class="empty">
@@ -40,26 +23,8 @@
     </svg>
 
     <h1>Start your map</h1>
-    <p class="lead">
-      Paste anything you want to keep. Plexus saves it instantly, then finds what it's related to and
-      links it for you.
-    </p>
-
-    <div class="actions">
-      <button class="primary" onclick={onadd}>Add something <kbd>{hotkey}</kbd></button>
-      <span class="or">or press <kbd>Ctrl</kbd>+<kbd>V</kbd> right here</span>
-    </div>
-
-    <ul class="kinds" aria-label="What you can add">
-      {#each kinds as [kind, label]}
-        <li><span class="dot" style:background={`var(--kind-${kind})`}></span>{label}</li>
-      {/each}
-    </ul>
-
-    <p class="hint">
-      <kbd>{hotkey}</kbd> works from any app, even with this window closed.
-      {#if library}<br />Everything is kept as plain files in <code>{library}</code>.{/if}
-    </p>
+    <button class="primary" onclick={onadd}>Add something <kbd>{hotkey}</kbd></button>
+    <p class="hint">or paste anywhere here</p>
   </div>
 </div>
 
@@ -78,7 +43,7 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 14px;
+    gap: 16px;
     text-align: center;
   }
 
@@ -115,26 +80,13 @@
     letter-spacing: -0.01em;
   }
 
-  .lead {
-    margin: 0;
-    color: var(--text-muted);
-    font-size: 15px;
-    line-height: 1.55;
-  }
 
-  .actions {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: center;
-    gap: 10px 14px;
-    margin-top: 4px;
-  }
 
   .primary {
     display: flex;
     align-items: center;
     gap: 10px;
+    margin-top: 4px;
     padding: 9px 16px;
     border: none;
     border-radius: 10px;
@@ -153,46 +105,14 @@
     color: white;
   }
 
-  .or {
+
+
+
+
+  .hint {
+    margin: 0;
     color: var(--text-muted);
     font-size: 13px;
   }
 
-  .kinds {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 6px;
-    margin: 6px 0 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .kinds li {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 3px 10px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--surface);
-    font-size: 12px;
-  }
-
-  .dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-  }
-
-  .hint {
-    margin: 4px 0 0;
-    color: var(--text-muted);
-    font-size: 12px;
-    line-height: 1.7;
-  }
-
-  code {
-    font: 12px var(--mono);
-  }
 </style>
