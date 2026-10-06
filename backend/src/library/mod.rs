@@ -95,6 +95,11 @@ impl Library {
 }
 
 /// "Rust's Ownership Rules!" → "rusts-ownership-rules"
+/// How many notes the library at `root` holds, without opening it (for picking a folder).
+pub fn count_notes(root: &Path) -> usize {
+    reconcile::note_files(&root.join(ITEMS_DIR)).len()
+}
+
 pub fn slug(title: &str) -> String {
     let mut slug = String::new();
     for c in title.chars().flat_map(char::to_lowercase) {

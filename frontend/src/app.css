@@ -274,6 +274,11 @@ input[type='number'].input::-webkit-outer-spin-button {
   background-clip: padding-box;
 }
 
+/* A passage an Ask answer quoted, marked in its note. */
+::highlight(cited) {
+  background-color: color-mix(in srgb, var(--accent) 32%, transparent);
+}
+
 kbd {
   font: 12px var(--mono);
   padding: 1px 6px;
@@ -285,4 +290,93 @@ kbd {
 .btn.primary kbd {
   background: rgb(255 255 255 / 0.2);
   color: white;
+}
+
+/* Settings-style rows, shared by Settings, the provider form and first-run setup: a .group of
+ * .item rows, each a .label (title + .desc) and its control. Inside an element with .prefs. */
+.prefs .group {
+  border-radius: 12px;
+  background: var(--group);
+}
+
+.prefs .item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 56px;
+  padding: 10px 14px;
+}
+
+/* A faint hairline, inset from the edges, between rows. */
+.prefs .item + .item::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 14px;
+  right: 14px;
+  height: 1px;
+  background: var(--line);
+}
+
+.prefs label.item {
+  cursor: pointer;
+}
+
+.prefs .label {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.prefs .desc {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.prefs .error {
+  color: var(--danger);
+}
+
+.prefs .warn {
+  color: var(--warning);
+}
+
+/* A saved key is never shown, only that there is one: dots in the normal text colour. */
+.prefs .input.saved::placeholder {
+  color: var(--text);
+  opacity: 0.75;
+  letter-spacing: 0.15em;
+}
+
+.prefs .tag {
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.prefs .actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.prefs .actions.start {
+  justify-content: flex-start;
+}
+
+.prefs .problem {
+  margin: 12px 2px 0;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
+.prefs .field {
+  width: 240px;
 }

@@ -73,15 +73,19 @@ export interface AiPreset {
   local?: boolean
   /** Whether the default model reads images. */
   vision: boolean
+  /** A few words shown with the name in the list, e.g. "free plan". */
+  hint?: string
+  /** Where to make a key. */
+  keyUrl?: string
 }
 
 export const aiPresets: AiPreset[] = [
-  { id: 'openai', label: 'OpenAI', kind: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', vision: true },
-  { id: 'anthropic', label: 'Anthropic', kind: 'anthropic', baseUrl: 'https://api.anthropic.com', model: 'claude-haiku-4-5-20251001', vision: true },
-  { id: 'gemini', label: 'Google Gemini', kind: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-2.5-flash', vision: true },
-  { id: 'groq', label: 'Groq', kind: 'openai', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.3-70b-versatile', vision: false },
-  { id: 'openrouter', label: 'OpenRouter', kind: 'openai', baseUrl: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4o-mini', vision: true },
-  { id: 'ollama', label: 'Ollama (this computer)', kind: 'openai', baseUrl: 'http://localhost:11434/v1', model: 'llama3.2', local: true, vision: false },
-  { id: 'lmstudio', label: 'LM Studio (this computer)', kind: 'openai', baseUrl: 'http://localhost:1234/v1', model: '', local: true, vision: false },
+  { id: 'openai', label: 'OpenAI', kind: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', vision: true, keyUrl: 'https://platform.openai.com/api-keys' },
+  { id: 'anthropic', label: 'Anthropic', kind: 'anthropic', baseUrl: 'https://api.anthropic.com', model: 'claude-haiku-4-5-20251001', vision: true, keyUrl: 'https://console.anthropic.com/settings/keys' },
+  { id: 'gemini', label: 'Google Gemini', kind: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-2.5-flash', vision: true, hint: 'free plan', keyUrl: 'https://aistudio.google.com/apikey' },
+  { id: 'groq', label: 'Groq', kind: 'openai', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.3-70b-versatile', vision: false, hint: 'free plan', keyUrl: 'https://console.groq.com/keys' },
+  { id: 'openrouter', label: 'OpenRouter', kind: 'openai', baseUrl: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4o-mini', vision: true, keyUrl: 'https://openrouter.ai/settings/keys' },
+  { id: 'ollama', label: 'Ollama (this computer)', kind: 'openai', baseUrl: 'http://localhost:11434/v1', model: 'llama3.2', local: true, vision: false, hint: 'private' },
+  { id: 'lmstudio', label: 'LM Studio (this computer)', kind: 'openai', baseUrl: 'http://localhost:1234/v1', model: '', local: true, vision: false, hint: 'private' },
 ]
 

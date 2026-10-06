@@ -9,6 +9,7 @@ import type {
   CaptureResult,
   Deleted,
   EnrichStatus,
+  FolderInfo,
   HotkeyStatus,
   Item,
   ItemDetail,
@@ -48,9 +49,10 @@ export const aiKeyStatus = (id: string) => call<AiKeyStatus>('ai_key_status', { 
 /** Stores a connection's key in the system keychain (empty removes it). */
 export const setAiKey = (id: string, key: string) => call<void>('set_ai_key', { id, key })
 /** A tiny request with a connection, before or after it's saved; `key` is the one just typed (else
- * the saved one is used). Rejects with why it failed. */
+ * the saved one is used). Rejects with an `AiProblem`. */
 export const testAi = (connection: AiConnection, key?: string) => call<void>('test_ai', { connection, key })
-/** The chat models a connection's provider offers (needs its key, unless it's a local server). */
+/** The chat models a connection's provider offers (needs its key, unless it's a local server).
+ * Rejects with an `AiProblem`. */
 export const listAiModels = (connection: AiConnection, key?: string) =>
   call<ModelInfo[]>('list_ai_models', { connection, key })
 export const enrichStatus = () => call<EnrichStatus>('enrich_status')
@@ -89,6 +91,14 @@ export const askCheck = (connection: AiConnection, key?: string) => call<AskChec
 export const aiUsage = () => call<UsageReport>('ai_usage')
 export const hotkeyStatus = () => call<HotkeyStatus>('hotkey_status')
 export const configureHotkey = () => call<void>('configure_hotkey')
+/** Registers the global shortcut now (at first run it waits for setup's shortcut step). */
+export const startHotkey = () => call<void>('start_hotkey')
+/** How many notes a folder holds as a library; without a path, the library open now. */
+export const inspectFolder = (path?: string) => call<FolderInfo>('inspect_folder', { path })
+/** The system's folder picker; null when cancelled. */
+export const pickFolder = () => call<string | null>('pick_folder')
+/** Starts Plexus again (to open another library folder). */
+export const restartApp = () => call<void>('restart_app')
 
 export const showCapture = () => call<void>('show_capture')
 export const hideCapture = () => call<void>('hide_capture')
@@ -123,6 +133,8 @@ export const search = (query: string) => call<string[]>('search', { query })
 /** Opens the item's original (or its note); `attachment` picks one of the extra originals. */
 export const openItemFile = (id: string, attachment?: number) => call<void>('open_item_file', { id, attachment })
 export const openSource = (id: string) => call<void>('open_source', { id })
+/** Opens a web link in the browser. */
+export const openUrl = (url: string) => call<void>('open_url', { url })
 /** Links two items by hand (kept in the note of `from`); such links are always strong. */
 export const linkItems = (from: string, to: string) => call<void>('link_items', { from, to })
 /** Removes a link made by hand. */

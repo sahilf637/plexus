@@ -88,6 +88,35 @@ pub enum LlmError {
     /// This model can't call tools; ask for JSON instead.
     #[error("this model can't call tools: {0}")]
     NoTools(String),
+    /// The address would send the key unencrypted over the internet.
+    #[error("won't send your key over an unencrypted connection to another computer; use an https:// address")]
+    Insecure,
+}
+
+impl LlmError {
+    /// What went wrong, as the setup form tells it: `"key"`, `"busy"`, `"network"`, `"address"`, or
+    /// `"model"` for everything else (the model refused or answered with something unusable).
+    pub fn kind(&self) -> &'static str {
+        match self {
+            LlmError::Auth(_) => "key",
+            LlmError::RateLimited(_) => "busy",
+            LlmError::Unavailable(_) => "network",
+            LlmError::Insecure => "address",
+            LlmError::Bad(_) | LlmError::NoTools(_) => "model",
+        }
+    }
+
+    /// A sentence for someone setting up a provider: no provider messages or status codes, and
+    /// what to do next. The provider's own words stay in the log.
+    pub fn plain(&self) -> &'static str {
+        match self {
+            LlmError::Auth(_) => "The provider didn't accept this key. Check it and try again.",
+            LlmError::RateLimited(_) => "The provider is busy, or this model is over its limit right now. Try again shortly, or pick a different model.",
+            LlmError::Unavailable(_) => "Couldn't get an answer from the provider. Check your connection, then try again or pick a different model.",
+            LlmError::Insecure => "Plexus won't send your key over an unencrypted connection to another computer. Use an address that starts with https://.",
+            LlmError::Bad(_) | LlmError::NoTools(_) => "Something went wrong with this model. Try a different one.",
+        }
+    }
 }
 
 /// (server, model) → whether calling tools natively works there (known once tried).
@@ -191,9 +220,7 @@ fn send(url: &str, headers: &[(&str, &str)], body: Option<&Value>) -> Result<Rep
     // A key is never sent in the clear over the internet.
     let has_key = headers.iter().any(|(name, value)| !value.is_empty() && is_credential(name));
     if has_key && url.starts_with("http://") && !is_private_host(url) {
-        return Err(LlmError::Bad(
-            "won't send your key over an unencrypted connection to another computer; use an https:// address".into(),
-        ));
+        return Err(LlmError::Insecure);
     }
     static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
         // Status errors are read from the body, which says what's wrong.
@@ -369,7 +396,24 @@ mod tests {
             assert!(!is_private_host(remote), "{remote}");
         }
         let error = post("http://api.example.com/v1", &[("authorization", "Bearer k")], &json!({})).unwrap_err();
-        assert!(matches!(error, LlmError::Bad(m) if m.contains("unencrypted")));
+        assert_eq!(error, LlmError::Insecure);
+    }
+
+    #[test]
+    fn what_the_form_says_never_repeats_the_providers_words() {
+        let raw = "Resource has been exhausted (e.g. check quota). code 429, try again later";
+        for error in [
+            LlmError::Auth(raw.into()),
+            LlmError::RateLimited(None),
+            LlmError::Unavailable(raw.into()),
+            LlmError::Bad(raw.into()),
+            LlmError::NoTools(raw.into()),
+            LlmError::Insecure,
+        ] {
+            assert!(!error.plain().contains("429") && !error.plain().contains("quota"), "{error:?}");
+        }
+        assert_eq!(LlmError::Bad("x".into()).kind(), "model");
+        assert_eq!(LlmError::RateLimited(None).kind(), "busy");
     }
 
     #[test]

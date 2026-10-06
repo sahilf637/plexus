@@ -52,10 +52,12 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             let settings = SettingsStore::load(app.path().app_config_dir()?.join("settings.json"))?;
             sync_autostart(app.handle(), &settings.get());
+            let setup_done = settings.get().setup_done;
             // `PLEXUS_LIBRARY` opens another library for this run, e.g. one made by `npm run seed`.
             let library_path = std::env::var_os("PLEXUS_LIBRARY").map_or(settings.get().library_path, Into::into);
             tracing::info!(path = %library_path.display(), "opening library");
@@ -79,7 +81,10 @@ pub fn run() {
             }));
             start_background_work(app.handle(), link_queue, fetch_queue, extract_queue);
             tray::create(app.handle())?;
-            hotkey::register(app.handle());
+            // At first run the shortcut waits for setup's shortcut step (`start_hotkey`).
+            if setup_done {
+                hotkey::register(app.handle());
+            }
             capture::watch::start(app.handle());
             let args: Vec<String> = std::env::args().collect();
             handle_args(app.handle(), &args, false);
@@ -97,6 +102,10 @@ pub fn run() {
             commands::set_settings,
             commands::hotkey_status,
             commands::configure_hotkey,
+            commands::start_hotkey,
+            commands::inspect_folder,
+            commands::pick_folder,
+            commands::restart_app,
             commands::show_capture,
             commands::hide_capture,
             commands::clipboard_image,
@@ -114,6 +123,7 @@ pub fn run() {
             commands::search,
             commands::open_item_file,
             commands::open_source,
+            commands::open_url,
             commands::delete_items,
             commands::restore_items,
             commands::link_items,

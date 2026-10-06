@@ -123,6 +123,16 @@ pub struct DayRow {
     pub day: String,
     pub calls: u64,
     pub tokens: u64,
+    /// What the day's calls were for, the busiest first.
+    pub by: Vec<DayPurpose>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DayPurpose {
+    pub purpose: String,
+    pub calls: u64,
+    pub tokens: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -137,7 +147,7 @@ pub struct PurposeRow {
 #[serde(rename_all = "camelCase")]
 pub struct Report {
     pub today: Totals,
-    /// The last seven days, oldest first (days with nothing are there with zeros).
+    /// The last two weeks, oldest first (days with nothing are there with zeros).
     pub days: Vec<DayRow>,
     /// Today, by what the calls were for, the busiest first.
     pub by_purpose: Vec<PurposeRow>,
@@ -146,6 +156,9 @@ pub struct Report {
     /// Questions asked today (against the daily question limit).
     pub asks_today: u32,
 }
+
+/// How many days the report looks back over.
+const DAYS: i64 = 14;
 
 pub fn report(conn: &Connection) -> Result<Report> {
     let today = today();
@@ -175,11 +188,13 @@ pub fn report(conn: &Connection) -> Result<Report> {
     }
 
     let mut days = Vec::new();
-    let mut stmt = conn.prepare("SELECT COALESCE(SUM(calls), 0), COALESCE(SUM(tokens_in + tokens_out), 0) FROM ai_usage WHERE day = ?1")?;
-    for back in (0..7).rev() {
+    let mut stmt = conn.prepare("SELECT purpose, calls, tokens_in + tokens_out FROM ai_usage WHERE day = ?1 ORDER BY calls DESC, purpose")?;
+    for back in (0..DAYS).rev() {
         let day = (Utc::now() - Duration::days(back)).format("%Y-%m-%d").to_string();
-        let (calls, tokens): (i64, i64) = stmt.query_row([&day], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        days.push(DayRow { day, calls: calls as u64, tokens: tokens as u64 });
+        let by: Vec<DayPurpose> = stmt
+            .query_map([&day], |row| Ok(DayPurpose { purpose: row.get(0)?, calls: row.get::<_, i64>(1)? as u64, tokens: row.get::<_, i64>(2)? as u64 }))?
+            .collect::<rusqlite::Result<_>>()?;
+        days.push(DayRow { day, calls: by.iter().map(|p| p.calls).sum(), tokens: by.iter().map(|p| p.tokens).sum(), by });
     }
 
     let counter = |prefix: &str| -> Result<u32> { Ok(chunks::get_meta(conn, &format!("{prefix}_{today}"))?.and_then(|v| v.parse().ok()).unwrap_or(0)) };
@@ -211,10 +226,11 @@ mod tests {
             assert_eq!(report.by_purpose.iter().map(|p| (p.purpose.as_str(), p.totals.calls)).collect::<Vec<_>>(), [("notes", 3), ("ask", 2)]);
             assert_eq!((report.counted_today, report.asks_today), (42, 3));
             // Seven days, today last, the rest zero.
-            assert_eq!(report.days.len(), 7);
-            assert_eq!(report.days[6].calls, 5);
-            assert_eq!(report.days[6].tokens, 5500);
-            assert!(report.days[..6].iter().all(|d| d.calls == 0));
+            assert_eq!(report.days.len(), 14);
+            let last = &report.days[13];
+            assert_eq!((last.calls, last.tokens), (5, 5500));
+            assert_eq!(last.by.iter().map(|p| (p.purpose.as_str(), p.calls)).collect::<Vec<_>>(), [("notes", 3), ("ask", 2)]);
+            assert!(report.days[..13].iter().all(|d| d.calls == 0 && d.by.is_empty()));
             Ok(())
         })
         .unwrap();

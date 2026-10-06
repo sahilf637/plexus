@@ -28,7 +28,8 @@ pub fn set_settings(app: AppHandle, state: State<'_, AppState>, settings: Settin
     let previous = state.settings.get();
     state.settings.set(settings.clone())?;
     crate::sync_autostart(&app, &settings);
-    if settings.hotkey != previous.hotkey {
+    // The shortcut waits for setup (see `start_hotkey`), so it's registered when setup ends too.
+    if settings.hotkey != previous.hotkey || (settings.setup_done && !previous.setup_done) {
         hotkey::register(&app);
     }
     if settings.ai != previous.ai {
@@ -74,28 +75,55 @@ pub fn set_ai_key(app: AppHandle, state: State<'_, AppState>, id: String, key: S
     Ok(())
 }
 
+/// Why a provider check failed, for the setup form. `kind` says what to blame (see
+/// `LlmError::kind`) and `message` is a plain sentence: the provider's own words go to the log.
+#[derive(serde::Serialize)]
+pub struct AiProblem {
+    kind: &'static str,
+    message: String,
+}
+
+impl From<Error> for AiProblem {
+    fn from(error: Error) -> Self {
+        match error {
+            Error::Llm(e) => {
+                tracing::warn!("provider check failed: {e}");
+                AiProblem { kind: e.kind(), message: e.plain().to_string() }
+            }
+            other => AiProblem { kind: "other", message: other.to_string() },
+        }
+    }
+}
+
 /// Checks a connection with a tiny request, before or after it's saved. `key` is the one just
 /// typed; without it the saved key is used. Runs off the UI thread: a slow provider can take a
 /// while.
 #[tauri::command]
-pub async fn test_ai(connection: crate::settings::AiConnection, key: Option<String>) -> Result<()> {
+pub async fn test_ai(connection: crate::settings::AiConnection, key: Option<String>) -> std::result::Result<(), AiProblem> {
     tauri::async_runtime::spawn_blocking(move || {
         let _purpose = crate::usage::purpose(crate::usage::Purpose::Check);
         enrich::test_connection(&connection, key.as_deref())
     })
-        .await
-        .map_err(|e| Error::Invalid(e.to_string()))?
+    .await
+    .map_err(|e| Error::Invalid(e.to_string()))
+    .and_then(|checked| checked)
+    .map_err(AiProblem::from)
 }
 
 /// The chat models a connection's provider offers, for the model dropdown. Needs its key (just
 /// typed, or saved) unless the server is local.
 #[tauri::command]
-pub async fn list_ai_models(connection: crate::settings::AiConnection, key: Option<String>) -> Result<Vec<crate::llm::models::Model>> {
-    tauri::async_runtime::spawn_blocking(move || {
+pub async fn list_ai_models(
+    connection: crate::settings::AiConnection,
+    key: Option<String>,
+) -> std::result::Result<Vec<crate::llm::models::Model>, AiProblem> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<_> {
         Ok(crate::llm::models::list(&enrich::connection_config(&connection, key.as_deref())?)?)
     })
     .await
-    .map_err(|e| Error::Invalid(e.to_string()))?
+    .map_err(|e| Error::Invalid(e.to_string()))
+    .and_then(|listed| listed)
+    .map_err(AiProblem::from)
 }
 
 #[tauri::command]
@@ -182,6 +210,13 @@ pub fn hotkey_status(state: State<'_, AppState>) -> hotkey::HotkeyStatus {
 }
 
 /// Opens the system's own dialog for changing the shortcut (Wayland desktops).
+/// Registers the global shortcut now. At first run it waits for this, so the desktop's request to
+/// approve it (GNOME on Wayland) comes during setup's shortcut step rather than at launch.
+#[tauri::command]
+pub fn start_hotkey(app: AppHandle) {
+    hotkey::register(&app);
+}
+
 #[tauri::command]
 pub fn configure_hotkey(app: AppHandle) {
     hotkey::configure(&app);
@@ -426,6 +461,16 @@ pub fn open_source(app: AppHandle, state: State<'_, AppState>, id: String) -> Re
 
 /// Deletes items: their files go to the library's trash and the map drops them. The result
 /// carries the batch to pass to `restore_items` for Undo.
+/// Opens a web link in the browser (links inside notes, "Get a key" in setup).
+#[tauri::command]
+pub fn open_url(app: AppHandle, url: String) -> Result<()> {
+    use tauri_plugin_opener::OpenerExt;
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err(Error::Invalid("only web links can be opened".into()));
+    }
+    app.opener().open_url(url, None::<&str>).map_err(|e| Error::Invalid(e.to_string()))
+}
+
 #[tauri::command]
 pub fn delete_items(app: AppHandle, state: State<'_, AppState>, ids: Vec<String>) -> Result<trash::Deleted> {
     let deleted = trash::delete_items(&state.library, &state.db, &ids)?;
@@ -573,4 +618,39 @@ pub async fn ask_check(connection: crate::settings::AiConnection, key: Option<St
 #[tauri::command]
 pub fn ai_usage(state: State<'_, AppState>) -> Result<crate::usage::Report> {
     state.db.with(|conn| crate::usage::report(conn))
+}
+
+/// A library folder being considered in setup: where it is and how many notes it already has.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderInfo {
+    path: PathBuf,
+    notes: usize,
+    /// It is the library open now.
+    current: bool,
+}
+
+/// What a folder holds as a library. Defaults to the library open now.
+#[tauri::command]
+pub fn inspect_folder(state: State<'_, AppState>, path: Option<PathBuf>) -> FolderInfo {
+    let path = path.unwrap_or_else(|| state.library.root().to_path_buf());
+    let current = path == state.library.root();
+    FolderInfo { notes: crate::library::count_notes(&path), current, path }
+}
+
+/// The system's folder picker; `None` when cancelled.
+#[tauri::command]
+pub async fn pick_folder(app: AppHandle) -> Option<PathBuf> {
+    use tauri_plugin_dialog::DialogExt;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().set_title("Choose a library folder").pick_folder(move |folder| {
+        let _ = tx.send(folder.and_then(|f| f.into_path().ok()));
+    });
+    rx.await.ok().flatten()
+}
+
+/// Starts Plexus again, e.g. to open a library folder chosen in setup.
+#[tauri::command]
+pub fn restart_app(app: AppHandle) {
+    app.restart();
 }

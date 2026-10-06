@@ -18,7 +18,8 @@
   }: {
     items: Map<string, Item>
     /** A cited note (or a search result) was clicked. */
-    onselect: (id: string) => void
+    /** Opens a note; for a source, with the passage it quoted. */
+    onselect: (id: string, quote?: string) => void
     onclose: () => void
     /** Opens the AI part of Settings. */
     onsettings: () => void
@@ -74,7 +75,7 @@
   function citeClick(event: MouseEvent, a: Ask) {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button.cite')
     const source = button && sourceOf(a, Number(button.dataset.n))
-    if (source) onselect(source.itemId)
+    if (source) onselect(source.itemId, source.quote)
   }
 
   const titleOf = (id: string) => items.get(id)?.title ?? 'a deleted note'
@@ -171,7 +172,7 @@
         <ol class="sources">
           {#each a.sources as source (source.n)}
             <li>
-              <button onclick={() => onselect(source.itemId)}>
+              <button onclick={() => onselect(source.itemId, source.quote)}>
                 <span class="num">{source.n}</span>
                 <span class="what">
                   <span class="title">{titleOf(source.itemId)}</span>

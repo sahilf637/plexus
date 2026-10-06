@@ -7,6 +7,7 @@
     deleteItems,
     enrichStatus,
     getMap,
+    getSettings,
     getTopics,
     hotkeyStatus,
     on,
@@ -31,10 +32,13 @@
   import MapView from './components/Map.svelte'
   import type { PanDirection } from './lib/graph/map'
   import SettingsDialog from './components/SettingsDialog.svelte'
+  import Setup from './components/Setup.svelte'
   import Toasts from './components/Toasts.svelte'
 
   let hotkey = $state('Ctrl+Alt+V')
   let settingsOpen = $state(false)
+  /** First-run setup (or setup run again from Settings) covers the window. */
+  let setupOpen = $state(false)
   let settingsSection = $state<'general' | 'ai'>('general')
   let data = $state<MapData | null>(null)
   /** Bumped to rebuild the map from scratch (e.g. after the library changed on disk). */
@@ -67,6 +71,63 @@
     { tier: 'maybe', label: 'All', hint: 'Show every link, including maybes' },
   ]
   let lowestTier = $state<Tier>(readShow())
+
+  // The item panel docked (400 px) or widened to read, remembered on this computer.
+  const WIDE_KEY = 'plexus.readerWide'
+  const PANEL = 400
+  const READER = 880
+  let readerWide = $state(readWide())
+  function readWide(): boolean {
+    try {
+      return localStorage.getItem(WIDE_KEY) === '1'
+    } catch {
+      return false
+    }
+  }
+  // A width dragged by hand, used whenever the panel is open until the button or a double click
+  // on the edge puts the default back.
+  const SIZE_KEY = 'plexus.panelWidth'
+  const MIN_PANEL = 360
+  /** From this wide, the panel shows the reading layout, however it got that wide. */
+  const READER_FROM = 640
+  let customWidth = $state<number | null>(readCustom())
+  function readCustom(): number | null {
+    try {
+      const saved = Number(localStorage.getItem(SIZE_KEY))
+      return saved >= MIN_PANEL ? saved : null
+    } catch {
+      return null
+    }
+  }
+  function saveCustom() {
+    try {
+      if (customWidth === null) localStorage.removeItem(SIZE_KEY)
+      else localStorage.setItem(SIZE_KEY, String(customWidth))
+    } catch {}
+  }
+  let mainWidth = $state(0)
+  /** How wide the item panel is: dragged, or docked, or a reading column that leaves some map showing. */
+  const itemPanelWidth = $derived.by(() => {
+    const room = Math.max(MIN_PANEL, mainWidth - 160)
+    if (customWidth !== null) return Math.round(Math.min(customWidth, room))
+    return Math.min(readerWide ? READER : PANEL, Math.max(PANEL, mainWidth - 160), mainWidth || PANEL)
+  })
+  const panelWide = $derived(customWidth !== null ? itemPanelWidth >= READER_FROM : readerWide)
+  /** The button: widens to the default reading width, or narrows to the docked one. */
+  function toggleWide() {
+    readerWide = !panelWide
+    customWidth = null
+    try {
+      localStorage.setItem(WIDE_KEY, readerWide ? '1' : '0')
+    } catch {}
+    saveCustom()
+  }
+  function resetWidth() {
+    customWidth = null
+    saveCustom()
+  }
+  /** A source of an Ask answer was opened: its note shows the quoted passage. */
+  let cited = $state<{ id: string; quote: string } | null>(null)
   function readShow(): Tier {
     try {
       const saved = localStorage.getItem(SHOW_KEY)
@@ -124,6 +185,11 @@
   /** Picking an item leaves the topic; the topic's panel and the item's would overlap. */
   $effect(() => {
     if (selected) selectedTopic = null
+  })
+
+  /** A quote belongs to the note it was opened with. */
+  $effect(() => {
+    if (cited && cited.id !== selected) cited = null
   })
 
   function pickTopic(id: string | null) {
@@ -356,7 +422,7 @@
 
   // Ctrl+V on the map saves straight away, without the capture window.
   async function onpaste(event: ClipboardEvent) {
-    if (!event.clipboardData || isTyping(event.target, 'input, textarea, dialog')) return
+    if (setupOpen || !event.clipboardData || isTyping(event.target, 'input, textarea, dialog')) return
     event.preventDefault()
     try {
       for (const pasted of await resolve(snapshot(event.clipboardData))) {
@@ -371,6 +437,7 @@
   }
 
   function onkeydown(event: KeyboardEvent) {
+    if (setupOpen) return
     const typing = isTyping(event.target, 'input, textarea')
     if (event.key === 'Escape' && !typing) {
       // Esc first lets go of a picked item or topic; with none, it closes Ask.
@@ -387,6 +454,11 @@
     if (event.key === '/' && !typing) {
       event.preventDefault()
       searchInput?.focus()
+    }
+    if ((event.key === 'e' || event.key === 'E') && selected && !typing && !settingsOpen && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      event.preventDefault()
+      toggleWide()
+      return
     }
     navigate(event)
   }
@@ -444,6 +516,7 @@
   }
 
   onMount(() => {
+    getSettings().then((settings) => (setupOpen = !settings.setupDone))
     refreshHotkey()
     loadMap()
     enrichStatus().then((status) => (aiStatus = status))
@@ -548,7 +621,7 @@
     </div>
   </header>
 
-  <main bind:this={mainEl}>
+  <main bind:this={mainEl} bind:clientWidth={mainWidth}>
     {#if data && data.items.length}
       {#key mapVersion}
         <MapView
@@ -560,7 +633,7 @@
           {marked}
           {topics}
           {selectedTopic}
-          inset={panelOpen ? Math.min(400, mainEl?.clientWidth ?? 400) : 0}
+          inset={selected ? itemPanelWidth : panelOpen ? Math.min(PANEL, mainWidth || PANEL) : 0}
           {askPath}
           ontopic={pickTopic}
           onselect={pick}
@@ -582,6 +655,15 @@
           path={pathOf(selected)}
           ontopic={pickTopic}
           onask={() => openAsk({ id: selected!, label: `“${itemsById.get(selected!)?.title ?? 'this note'}”` })}
+          width={itemPanelWidth}
+          minWidth={MIN_PANEL}
+          maxWidth={Math.max(MIN_PANEL, mainWidth - 160)}
+          wide={panelWide}
+          onwide={toggleWide}
+          onresize={(w) => (customWidth = Math.round(w))}
+          onresized={saveCustom}
+          onreset={resetWidth}
+          quote={cited?.id === selected ? cited.quote : null}
         />
       {:else if selectedTopic && topicsById.get(selectedTopic)}
         <TopicPanel
@@ -599,7 +681,10 @@
       {:else if ask.open}
         <AskPanel
           items={itemsById}
-          onselect={(id) => pick(id)}
+          onselect={(id, quote) => {
+            pick(id)
+            cited = quote ? { id, quote } : null
+          }}
           onclose={() => (ask.open = false)}
           onsettings={() => { settingsSection = 'ai'; settingsOpen = true }}
           suggestions={askSuggestions}
@@ -638,8 +723,22 @@
 {#if settingsOpen}
   <SettingsDialog
     section={settingsSection}
+    onsetup={() => {
+      settingsOpen = false
+      setupOpen = true
+    }}
     onclose={() => {
       settingsOpen = false
+      refreshHotkey()
+      enrichStatus().then((status) => (aiStatus = status))
+    }}
+  />
+{/if}
+
+{#if setupOpen}
+  <Setup
+    onfinish={() => {
+      setupOpen = false
       refreshHotkey()
       enrichStatus().then((status) => (aiStatus = status))
     }}

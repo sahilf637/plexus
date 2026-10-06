@@ -1,10 +1,15 @@
 <script lang="ts">
   import DOMPurify from 'dompurify'
   import { marked } from 'marked'
-  import { fileUrl, getItem, linkItems, openItemFile, openSource, removeAiLink, revertTitle, search, unlinkItems } from '../lib/api'
+  import { tick } from 'svelte'
+  import { fileUrl, getItem, linkItems, openItemFile, openSource, openUrl, removeAiLink, revertTitle, search, unlinkItems } from '../lib/api'
   import { formatBytes, isAiLink, kindIcon, kindLabel, linkLabel, linkStrength, tierLabel, tiers } from '../lib/kinds'
+  import { findQuote, mark, pageOf } from '../lib/quote'
+  import { toast } from '../lib/toasts.svelte'
   import type { Concept, Edge, Item, ItemDetail, Topic } from '../lib/types'
   import Icon from './Icon.svelte'
+  import Lightbox from './Lightbox.svelte'
+  import PdfView from './PdfView.svelte'
 
   let {
     id,
@@ -19,6 +24,15 @@
     onconcept,
     path,
     ontopic,
+    width,
+    minWidth,
+    maxWidth,
+    wide,
+    onwide,
+    onresize,
+    onresized,
+    onreset,
+    quote = null,
   }: {
     id: string
     items: Map<string, Item>
@@ -34,10 +48,63 @@
     /** The topics the item sits in, from the top level down. */
     path: Topic[]
     ontopic: (id: string) => void
+    /** How wide the panel is, in pixels. */
+    width: number
+    /** The narrowest and widest it can be dragged. */
+    minWidth: number
+    maxWidth: number
+    /** Wide enough to read the item (the reading layout). */
+    wide: boolean
+    onwide: () => void
+    /** The edge is being dragged to this width. */
+    onresize: (width: number) => void
+    /** The drag ended. */
+    onresized: () => void
+    /** Back to the default width. */
+    onreset: () => void
+    /** A passage to show and mark (a source of an Ask answer). */
+    quote?: string | null
   } = $props()
+
+  let dragging = $state(false)
+  let drag: { x: number; width: number } | null = null
+  const fit = (w: number) => Math.round(Math.min(maxWidth, Math.max(minWidth, w)))
+
+  function gripDown(event: PointerEvent) {
+    if (event.button !== 0) return
+    drag = { x: event.clientX, width }
+    dragging = true
+    ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
+    event.preventDefault()
+  }
+
+  function gripMove(event: PointerEvent) {
+    // The panel is on the right, so dragging left makes it wider.
+    if (drag) onresize(fit(drag.width + drag.x - event.clientX))
+  }
+
+  function gripUp() {
+    if (!drag) return
+    drag = null
+    dragging = false
+    onresized()
+  }
+
+  function gripKey(event: KeyboardEvent) {
+    const by = event.key === 'ArrowLeft' ? 24 : event.key === 'ArrowRight' ? -24 : 0
+    if (!by) return
+    event.preventDefault()
+    onresize(fit(width + by))
+    onresized()
+  }
 
   let detail = $state<ItemDetail | null>(null)
   let imageUrl = $state<string | null>(null)
+  /** The original, when it's a PDF to show page by page. */
+  let pdfUrl = $state<string | null>(null)
+  /** The picture shown full size. */
+  let zoomed = $state<{ src: string; alt: string } | null>(null)
+  let menuOpen = $state(false)
   /** Preview URLs of the extra originals that are images, by position. */
   let extraUrls = $state<(string | null)[]>([])
   let error = $state('')
@@ -55,6 +122,7 @@
     void version
     detail = null
     imageUrl = null
+    pdfUrl = null
     extraUrls = []
     error = ''
     getItem(current)
@@ -62,6 +130,7 @@
         if (current !== id) return
         detail = d
         if (d.kind === 'image' && d.assetFile) imageUrl = await fileUrl(d.assetFile)
+        if (isPdf(d) && d.assetFile) pdfUrl = await fileUrl(d.assetFile)
         extraUrls = await Promise.all(d.attachments.map((a) => (a.kind === 'image' ? fileUrl(a.file) : null)))
       })
       .catch((e) => (error = String(e)))
@@ -112,6 +181,7 @@
   // A different item starts with the box closed, scrolled to the top.
   $effect(() => {
     void id
+    menuOpen = false
     linking = false
     linkQuery = ''
     titleHidden = false
@@ -149,6 +219,69 @@
     return DOMPurify.sanitize(marked.parse(markdown, { async: false }))
   }
 
+  const isPdf = (d: ItemDetail) => d.mime === 'application/pdf' || /\.pdf$/i.test(d.assetPath ?? '')
+
+  /** Clicks inside a note's text: web links open in the browser (never in this window), pictures
+   * open full size. */
+  function contentClick(event: MouseEvent) {
+    const target = event.target as HTMLElement
+    const link = target.closest('a')
+    if (link) {
+      event.preventDefault()
+      const href = link.getAttribute('href') ?? ''
+      if (/^https?:\/\//.test(href)) void openUrl(href)
+      return
+    }
+    if (target instanceof HTMLImageElement) zoomed = { src: target.currentSrc || target.src, alt: target.alt }
+  }
+
+  // --- the quoted passage of an Ask source -------------------------------------------------
+
+  /** The PDF page the quote is on, to scroll to. */
+  let quotePage = $state<number | null>(null)
+
+  $effect(() => {
+    const wanted = quote
+    const shown = detail
+    mark(null)
+    quotePage = null
+    if (!wanted || !shown || shown.id !== id) return
+    if (pdfUrl && shown.extractedText) {
+      quotePage = pageOf(shown.extractedText, wanted)
+      return // Marked once that page is drawn (`pdfDrawn`).
+    }
+    void tick().then(() => {
+      const root = scroller?.querySelector('.content')
+      // Text found in a file is folded away; open it to show the quote.
+      root?.querySelectorAll('details').forEach((d) => (d.open = true))
+      const range = root ? findQuote(root, wanted) : null
+      if (!range) return
+      mark(range)
+      range.startContainer.parentElement?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    })
+    return () => mark(null)
+  })
+
+  function pdfDrawn(page: number, element: HTMLElement) {
+    if (!quote || page !== quotePage) return
+    const range = findQuote(element, quote)
+    if (!range) return
+    mark(range)
+    range.startContainer.parentElement?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }
+
+  async function copyText() {
+    menuOpen = false
+    if (!detail) return
+    const text = [detail.body, detail.extractedText ?? ''].filter((t) => t.trim()).join('\n\n').replace(/<!-- page \d+ -->\n?/g, '')
+    try {
+      await navigator.clipboard.writeText(text.trim())
+      toast('Copied')
+    } catch (e) {
+      toast(`Couldn't copy: ${e}`)
+    }
+  }
+
   /** The colour of a link's type tag, so it can be read at a glance. */
   const linkTone: Record<string, string> = {
     supports: 'var(--kind-code)',
@@ -157,16 +290,57 @@
     example_of: 'var(--kind-url)',
   }
 
+  /** "example.com" from a URL, for the source line. */
+  function hostOf(url: string): string {
+    try {
+      return new URL(url).hostname.replace(/^www\./, '')
+    } catch {
+      return url
+    }
+  }
+
   function capturedLabel(iso: string): string {
     return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
   }
 </script>
 
-<aside>
+<svelte:window
+  onpointerdown={(e) => menuOpen && !(e.target as Element).closest('.more') && (menuOpen = false)}
+  onkeydowncapture={(e) => {
+    // Esc closes the menu first, before the map gets it (which would close the panel).
+    if (menuOpen && e.key === 'Escape') {
+      e.stopImmediatePropagation()
+      menuOpen = false
+    }
+  }}
+/>
+
+{#if zoomed}<Lightbox src={zoomed.src} alt={zoomed.alt} onclose={() => (zoomed = null)} />{/if}
+
+<aside class:wide class:dragging style:width={`${width}px`}>
+  <!-- The left edge: drag to set the width, double click for the default, arrows from the keyboard. -->
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+  <div
+    class="grip"
+    role="separator"
+    aria-orientation="vertical"
+    aria-label="Panel width"
+    aria-valuenow={width}
+    aria-valuemin={minWidth}
+    aria-valuemax={maxWidth}
+    tabindex="0"
+    title="Drag to resize, double click for the default"
+    onpointerdown={gripDown}
+    onpointermove={gripMove}
+    onpointerup={gripUp}
+    onpointercancel={gripUp}
+    ondblclick={onreset}
+    onkeydown={gripKey}
+  ></div>
   <header class:scrolled>
     <span class="chip" style:--kind={detail ? `var(--kind-${detail.kind})` : 'var(--accent)'}>
       {#if detail}<Icon name={kindIcon[detail.kind]} size={13} />{/if}
-      {detail ? kindLabel[detail.kind] : ''}{detail?.language ? ` · ${detail.language}` : ''}
+      {detail ? (isPdf(detail) ? 'PDF' : kindLabel[detail.kind]) : ''}{detail?.language ? ` · ${detail.language}` : ''}
     </span>
     {#if detail && titleHidden}
       <button class="bar-title" onclick={() => scroller?.scrollTo({ top: 0, behavior: 'smooth' })} title="Back to the top">{detail.title}</button>
@@ -174,25 +348,30 @@
       <span class="bar-gap"></span>
     {/if}
     <span class="tools">
-      {#if detail?.sourceUrl}
-        <button class="icon-btn" onclick={() => openSource(detail!.id)} title="Open link" aria-label="Open link">
-          <Icon name="external" />
-        </button>
-      {/if}
-      {#if detail}
-        <button
-          class="icon-btn"
-          onclick={() => openItemFile(detail!.id)}
-          title={detail.assetPath ? 'Open file' : 'Open note'}
-          aria-label={detail.assetPath ? 'Open file' : 'Open note'}
-        >
-          <Icon name="file" />
-        </button>
-        <button class="icon-btn danger" onclick={ondelete} title="Delete (Del). You can undo right after." aria-label="Delete">
-          <Icon name="trash" />
-        </button>
-      {/if}
       <button class="icon-btn" onclick={onask} title="Ask about this" aria-label="Ask about this"><Icon name="sparkles" /></button>
+      <button class="icon-btn" onclick={onwide} title={wide ? 'Narrow the panel (E)' : 'Widen to read (E)'} aria-label={wide ? 'Narrow the panel' : 'Widen to read'} aria-pressed={wide}>
+        <Icon name={wide ? 'collapse' : 'expand'} />
+      </button>
+      {#if detail}
+        <span class="more">
+          <button class="icon-btn" class:on={menuOpen} onclick={() => (menuOpen = !menuOpen)} title="More" aria-label="More" aria-haspopup="menu" aria-expanded={menuOpen}>
+            <Icon name="more" />
+          </button>
+          {#if menuOpen}
+            <div class="menu" role="menu">
+              {#if detail.sourceUrl}
+                <button role="menuitem" onclick={() => { menuOpen = false; openSource(detail!.id) }}><Icon name="external" size={14} />Open the page</button>
+              {/if}
+              <button role="menuitem" onclick={() => { menuOpen = false; openItemFile(detail!.id) }}>
+                <Icon name="file" size={14} />{detail.assetPath ? 'Open the original' : 'Open the note file'}
+              </button>
+              <button role="menuitem" onclick={copyText}><Icon name="copy" size={14} />Copy text</button>
+              <hr />
+              <button role="menuitem" class="danger" onclick={() => { menuOpen = false; ondelete() }}><Icon name="trash" size={14} />Delete <kbd>Del</kbd></button>
+            </div>
+          {/if}
+        </span>
+      {/if}
       <button class="icon-btn" onclick={onclose} title="Close (Esc)" aria-label="Close"><Icon name="close" /></button>
     </span>
   </header>
@@ -229,18 +408,36 @@
       </ul>
     {/if}
 
-    {#if detail.kind === 'url' && html}<p class="source muted">{detail.sourceUrl}</p>{/if}
+    {#if detail.kind === 'url' && detail.sourceUrl}
+      <button class="source" onclick={() => openSource(detail!.id)} title={detail.sourceUrl}>
+        <Icon name="globe" size={13} /><span>{hostOf(detail.sourceUrl)}</span><Icon name="external" size={12} />
+      </button>
+    {/if}
 
-    <div class="content">
-      {#if detail.kind === 'image' || detail.kind === 'file'}
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+    <div class="content" onclick={contentClick}>
+      {#if pdfUrl}
+        {#if noteHtml}<div class="markdown note">{@html noteHtml}</div>{/if}
+        <PdfView src={pdfUrl} page={quotePage} ondrawn={pdfDrawn} />
+        {#if detail.extractedText}
+          <details class="extracted">
+            <summary>Text found</summary>
+            <pre>{detail.extractedText.replace(/<!-- page \d+ -->\n?/g, '')}</pre>
+          </details>
+        {/if}
+      {:else if detail.kind === 'image' || detail.kind === 'file'}
         {#if imageUrl}
-          <img src={imageUrl} alt={detail.title} />
+          <button class="picture" onclick={() => (zoomed = { src: imageUrl!, alt: detail!.title })} title="Show full size">
+            <img src={imageUrl} alt={detail.title} />
+          </button>
         {:else if detail.kind === 'file'}
           <p class="muted">{detail.mime ?? 'File'}</p>
         {/if}
         {#each detail.attachments as attachment, i}
           {#if extraUrls[i]}
-            <img src={extraUrls[i]} alt={attachment.name} />
+            <button class="picture" onclick={() => (zoomed = { src: extraUrls[i]!, alt: attachment.name })} title="Show full size">
+              <img src={extraUrls[i]} alt={attachment.name} />
+            </button>
           {:else if attachment.kind !== 'image'}
             <button class="attachment" onclick={() => openItemFile(detail!.id, i)}>
               <Icon name="file" size={15} />
@@ -260,8 +457,8 @@
           <p class="muted">Reading…</p>
         {/if}
       {:else if detail.kind === 'url' && !html}
-        <p class="source">{detail.sourceUrl}</p>
-        {#if detail.extracted === null}<p class="muted">Reading the page…</p>{/if}
+        {#if detail.extracted === null}<p class="muted">Reading the page…</p>
+        {:else}<p class="muted">The page couldn't be read. Open it to see it in the browser.</p>{/if}
       {:else}
         <!-- Sanitised with DOMPurify above. -->
         <div class="markdown">{@html html}</div>
@@ -349,13 +546,50 @@
     top: 0;
     right: 0;
     bottom: 0;
-    width: min(400px, 100%);
+    max-width: 100%;
     display: flex;
     flex-direction: column;
     overflow: hidden;
     background: var(--surface);
     box-shadow: -12px 0 28px -16px rgb(0 0 0 / 0.45);
     animation: slide-in 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    transition: width 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+
+  /* Following the hand, not gliding after it. */
+  aside.dragging {
+    transition: none;
+    user-select: none;
+  }
+
+  .grip {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 5;
+    width: 8px;
+    cursor: col-resize;
+    touch-action: none;
+    outline: none;
+  }
+
+  .grip::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 2px;
+    background: var(--accent);
+    opacity: 0;
+    transition: opacity 120ms;
+  }
+
+  .grip:hover::after,
+  .grip:focus-visible::after,
+  aside.dragging .grip::after {
+    opacity: 0.8;
   }
 
   @keyframes slide-in {
@@ -368,6 +602,7 @@
   @media (prefers-reduced-motion: reduce) {
     aside {
       animation: none;
+      transition: none;
     }
   }
 
@@ -551,9 +786,6 @@
     border-radius: 8px;
   }
 
-  .content img + img,
-  .content img + .attachment,
-  .attachment + img,
   .attachment + .attachment {
     margin-top: 8px;
   }
@@ -579,25 +811,266 @@
     white-space: nowrap;
   }
 
+  /* Where a saved page came from: its site, opening the page. */
   .source {
-    overflow-wrap: anywhere;
-    margin: 0;
+    align-self: flex-start;
+    max-width: 100%;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 2px;
+    padding: 2px 8px 2px 6px;
+    border: none;
+    border-radius: 999px;
+    background: var(--fill);
+    color: var(--text-muted);
+    font-size: 12px;
   }
 
-  .markdown :global(pre) {
-    overflow-x: auto;
-    padding: 10px;
-    border-radius: 8px;
-    background: var(--surface-2);
-    font: 12px/1.5 var(--mono);
+  .source span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .source:hover {
+    background: var(--fill-hover);
+    color: var(--text);
+  }
+
+  /* The "More" menu under its button. */
+  .more {
+    position: relative;
+  }
+
+  .icon-btn.on {
+    background: var(--hover);
+    color: var(--text);
+  }
+
+  .menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    z-index: 3;
+    display: flex;
+    flex-direction: column;
+    min-width: 200px;
+    padding: 4px;
+    border-radius: 10px;
+    background: var(--popover);
+    box-shadow: var(--shadow);
+    animation: pop 120ms ease-out;
+  }
+
+  @keyframes pop {
+    from {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+  }
+
+  .menu button {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 10px;
+    border: none;
+    border-radius: 6px;
+    background: none;
+    text-align: left;
+  }
+
+  .menu button:hover {
+    background: var(--hover);
+  }
+
+  .menu .danger {
+    color: var(--danger);
+  }
+
+  .menu .danger:hover {
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
+  }
+
+  .menu kbd {
+    margin-left: auto;
+  }
+
+  .menu hr {
+    width: 100%;
+    margin: 4px 0;
+    border: none;
+    border-top: 1px solid var(--line);
+  }
+
+  .picture {
+    display: block;
+    width: 100%;
+    padding: 0;
+    border: none;
+    background: none;
+    cursor: zoom-in;
+  }
+
+  .picture + .picture,
+  .picture + .attachment,
+  .attachment + .picture {
+    margin-top: 8px;
+  }
+
+  /* A note's text, set for reading. */
+  .markdown {
+    overflow-wrap: anywhere;
+    line-height: 1.6;
   }
 
   .markdown :global(:first-child) {
     margin-top: 0;
   }
 
-  .markdown {
-    overflow-wrap: anywhere;
+  .markdown :global(:is(h1, h2, h3, h4, h5, h6)) {
+    margin: 1.4em 0 0.4em;
+    line-height: 1.3;
+    letter-spacing: -0.01em;
+  }
+
+  .markdown :global(h1) {
+    font-size: 1.35em;
+  }
+
+  .markdown :global(h2) {
+    font-size: 1.2em;
+  }
+
+  .markdown :global(:is(h3, h4, h5, h6)) {
+    font-size: 1.05em;
+  }
+
+  .markdown :global(:is(p, ul, ol, blockquote, pre, table, figure)) {
+    margin: 0 0 0.85em;
+  }
+
+  .markdown :global(:is(ul, ol)) {
+    padding-left: 1.4em;
+  }
+
+  .markdown :global(li + li) {
+    margin-top: 0.25em;
+  }
+
+  .markdown :global(a) {
+    color: var(--accent);
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent);
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+
+  .markdown :global(a:hover) {
+    text-decoration-color: currentColor;
+  }
+
+  .markdown :global(img) {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    margin: 0.4em auto;
+    border-radius: 8px;
+    cursor: zoom-in;
+  }
+
+  .markdown :global(blockquote) {
+    padding: 2px 0 2px 14px;
+    border-left: 3px solid var(--accent-soft);
+    color: var(--text-muted);
+  }
+
+  .markdown :global(hr) {
+    margin: 1.4em 0;
+    border: none;
+    border-top: 1px solid var(--line);
+  }
+
+  .markdown :global(code) {
+    padding: 1px 5px;
+    border-radius: 5px;
+    background: var(--fill);
+    font: 0.88em var(--mono);
+  }
+
+  .markdown :global(pre) {
+    overflow-x: auto;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: var(--surface-2);
+    font: 12px/1.5 var(--mono);
+  }
+
+  .markdown :global(pre code) {
+    padding: 0;
+    background: none;
+    font: inherit;
+  }
+
+  .markdown :global(table) {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+    font-size: 0.92em;
+  }
+
+  .markdown :global(:is(th, td)) {
+    padding: 5px 10px;
+    border-bottom: 1px solid var(--line);
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .markdown :global(th) {
+    font-weight: 600;
+  }
+
+  /* Wide: a reading column with a comfortable measure, larger text. */
+  aside.wide .scroll {
+    padding: 8px 32px 32px;
+  }
+
+  aside.wide .scroll > :global(*) {
+    width: 100%;
+    max-width: 720px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  aside.wide .source {
+    width: auto;
+    margin-left: max(0px, calc((100% - 720px) / 2));
+  }
+
+  aside.wide h2 {
+    font-size: 26px;
+    letter-spacing: -0.02em;
+  }
+
+  aside.wide .summary {
+    font-size: 15px;
+  }
+
+  aside.wide .markdown {
+    font-size: 16px;
+    line-height: 1.7;
+  }
+
+  aside.wide .content {
+    margin-top: 18px;
+  }
+
+  aside.wide section {
+    margin-top: 28px;
+    padding-top: 18px;
+    border-top: 1px solid var(--line);
   }
 
   .note {

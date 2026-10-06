@@ -1,28 +1,27 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onMount, tick } from 'svelte'
   import {
     aiKeyStatus,
     configureHotkey,
     getSettings,
     hotkeyStatus,
-    listAiModels,
     olderStatus,
     regroupTopics,
     setAiKey,
     setSettings,
     aiUsage,
     askCheck,
-    testAi,
   } from '../lib/api'
   import { aiPresets } from '../lib/kinds'
   import { navigation, setNavigation } from '../lib/navigation.svelte'
   import Icon, { type IconName } from './Icon.svelte'
-  import Select, { type Option } from './Select.svelte'
-  import type { AiConnection, AiKeyStatus, AiSettings, HotkeyStatus, ModelInfo, OlderProgress, Settings, UsageReport } from '../lib/types'
+  import UsageChart from './UsageChart.svelte'
+  import ProviderForm from './ProviderForm.svelte'
+  import type { AiConnection, AiKeyStatus, AiSettings, HotkeyStatus, OlderProgress, Settings, UsageReport } from '../lib/types'
 
   type Section = 'general' | 'capture' | 'ai' | 'usage' | 'library'
 
-  let { onclose, section: first = 'general' }: { onclose: () => void; section?: Section } = $props()
+  let { onclose, onsetup, section: first = 'general' }: { onclose: () => void; onsetup: () => void; section?: Section } = $props()
 
   const SECTIONS: { id: Section; label: string; icon: IconName }[] = [
     { id: 'general', label: 'General', icon: 'settings' },
@@ -31,7 +30,6 @@
     { id: 'usage', label: 'Usage', icon: 'chart' },
     { id: 'library', label: 'Library', icon: 'folder' },
   ]
-  const OTHER = '__other__'
 
   // svelte-ignore state_referenced_locally: the section it opens on; the user moves it from there
   let section = $state<Section>(first)
@@ -47,7 +45,8 @@
   let adding = $state(false)
   /** The model being tried on a made-up question for Ask, and what came of it. */
   let askChecking = $state(false)
-  let askChecked = $state<{ ok: boolean; message: string } | null>(null)
+  let askChecked = $state<{ ok: boolean; protocol?: string; message: string } | null>(null)
+  let verdict = $state<HTMLElement>()
 
   /** What the AI has been used for; refreshed while the Usage page is showing. */
   let usage = $state<UsageReport | null>(null)
@@ -78,38 +77,39 @@
   const compact = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n))
   /** How full a meter is, 0 to 1 (a limit of 0 means none). */
   const filled = (used: number, limit: number) => (limit > 0 ? Math.min(1, used / limit) : 0)
-  const weekday = (day: string) => new Date(`${day}T12:00:00`).toLocaleDateString(undefined, { weekday: 'short' })
-  const busiest = $derived(Math.max(1, ...(usage?.days.map((d) => d.calls) ?? [1])))
+
+  /** The last number each limit had before it was switched off, so switching it back on returns to it. */
+  let lastLimit = $state<Record<string, number>>({})
+
+  function setLimit(key: string, value: number) {
+    const was = (settings?.ai as unknown as Record<string, number>)[key]
+    const next = Math.max(0, Math.floor(value) || 0)
+    if (was > 0 && next === 0) lastLimit[key] = was
+    void updateAi({ [key]: next })
+  }
 
   async function checkAsk() {
     const connection = settings?.ai.connections.find((c) => c.id === settings?.ai.active)
     if (!connection) return
     askChecking = true
     askChecked = null
+    await tick()
+    verdict?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
     try {
       const result = await askCheck(connection)
-      askChecked = { ok: result.ok, message: result.message }
+      askChecked = { ok: result.ok, protocol: result.protocol, message: result.message }
     } catch (e) {
       askChecked = { ok: false, message: String(e) }
     } finally {
       askChecking = false
+      await tick()
+      verdict?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
       void loadUsage()
     }
   }
   /** The provider being changed; its kind, address and key slot stay as they were. */
   let editing = $state<AiConnection | null>(null)
   let removing = $state<string | null>(null)
-
-  // The form's fields.
-  let presetId = $state(aiPresets[0].id)
-  let keyDraft = $state('')
-  let model = $state('')
-  let typingModel = $state(false)
-  let nameDraft = $state('')
-  let models = $state<ModelInfo[]>([])
-  let modelsState = $state<'idle' | 'loading' | 'failed'>('idle')
-  let modelsError = $state('')
-  let submit = $state<{ state: 'idle' | 'checking' | 'failed'; message: string }>({ state: 'idle', message: '' })
 
   // The slow pass over older notes: how far it has got, refreshed while this section is open.
   let older = $state<OlderProgress | null>(null)
@@ -140,26 +140,8 @@
   }
 
   const connections = $derived(settings?.ai.connections ?? [])
-  const preset = $derived(aiPresets.find((p) => p.id === presetId) ?? aiPresets[0])
-  const autoName = $derived.by(() => {
-    const taken = new Set(connections.map((c) => c.name))
-    let name = preset.label
-    for (let n = 2; taken.has(name); n++) name = `${preset.label} ${n}`
-    return name
-  })
-  const modelIds = $derived.by(() => {
-    const ids = new Set(models.map((m) => m.id))
-    const extra = [preset.model].filter((id) => !!id && !ids.has(id))
-    return [...extra, ...ids]
-  })
-  const modelOptions = $derived<Option[]>([
-    ...modelIds.map((id) => ({ value: id, label: id, hint: models.find((m) => m.id === id)?.vision ? 'sees images' : undefined })),
-    { value: OTHER, label: 'Other…' },
-  ])
-  const providerOptions: Option[] = aiPresets.map((p) => ({ value: p.id, label: p.label }))
   /** The key already saved for the provider being edited can stay as it is. */
   const keyKept = $derived(!!editing && !!keyStatuses[editing.id]?.hasKey)
-  const canAdd = $derived(!!model.trim() && (preset.local || keyKept || !!keyDraft.trim()) && submit.state !== 'checking')
 
   onMount(async () => {
     dialog?.showModal()
@@ -175,12 +157,6 @@
     settings = await setSettings({ ...settings, ...patch })
     // Registration is asynchronous on some systems; give it a moment before re-reading.
     setTimeout(async () => (status = await hotkeyStatus()), 300)
-  }
-
-  /** An error as a sentence: no "Error:" label, first letter capitalised. */
-  function describe(e: unknown): string {
-    const text = String(e).replace(/^Error:\s*/, '')
-    return text.charAt(0).toUpperCase() + text.slice(1)
   }
 
   async function loadKeyStatuses() {
@@ -222,112 +198,21 @@
   // --- the form ---------------------------------------------------------------------------
 
   function startEditing(c: AiConnection) {
-    presetId = aiPresets.some((p) => p.id === c.preset) ? c.preset : aiPresets[0].id
-    keyDraft = ''
-    nameDraft = c.name
-    typingModel = false
-    model = c.model
-    models = []
-    modelsState = 'idle'
-    submit = { state: 'idle', message: '' }
     editing = c
     adding = true
-    loadModels()
   }
 
   function startAdding() {
     editing = null
-    presetId = aiPresets[0].id
-    keyDraft = ''
-    nameDraft = ''
-    typingModel = false
-    model = aiPresets[0].model
-    models = []
-    submit = { state: 'idle', message: '' }
     adding = true
-    loadModels()
   }
 
-  /** What the form describes, as a connection (its id is final: the key is stored under it). */
-  let draftId = $state(crypto.randomUUID())
-  function draft(): AiConnection {
-    return {
-      id: editing?.id ?? draftId,
-      name: nameDraft.trim() || (editing?.name ?? autoName),
-      preset: editing?.preset ?? preset.id,
-      kind: editing?.kind ?? preset.kind,
-      baseUrl: editing?.baseUrl ?? preset.baseUrl,
-      model: model.trim(),
-      vision: models.find((m) => m.id === model)?.vision ?? (editing && model === editing.model ? editing.vision : preset.vision),
-    }
-  }
-
-  async function loadModels() {
-    // Needs a key first (typed, or saved when editing), unless it's a server on this computer.
-    if (!preset.local && !keyKept && !keyDraft.trim()) {
-      models = []
-      modelsState = 'idle'
-      return
-    }
-    const wanted = preset.id
-    modelsState = 'loading'
-    try {
-      const list = await listAiModels(draft(), keyDraft.trim() || undefined)
-      if (!adding || preset.id !== wanted) return
-      models = list
-      modelsState = 'idle'
-      // The preset's own pick if the provider has it, else its first model.
-      if (!typingModel && list.length && !list.some((m) => m.id === model)) model = list[0].id
-    } catch (e) {
-      if (preset.id !== wanted) return
-      models = []
-      modelsState = 'failed'
-      modelsError = describe(e)
-    }
-  }
-
-  function pickPreset(id: string) {
-    const next = aiPresets.find((p) => p.id === id)
-    if (!next) return
-    presetId = id
-    keyDraft = ''
-    typingModel = false
-    model = next.model
-    models = []
-    modelsState = 'idle'
-    loadModels()
-  }
-
-  function pickModel(id: string) {
-    if (id === OTHER) {
-      typingModel = true
-      return
-    }
-    typingModel = false
-    model = id
-  }
-
-  /** Checks the provider with what was typed (or its saved key), and only then keeps it. */
-  async function add() {
-    if (!settings || !canAdd) return
-    const connection = draft()
-    submit = { state: 'checking', message: '' }
-    try {
-      await testAi(connection, keyDraft.trim() || undefined)
-    } catch (e) {
-      submit = { state: 'failed', message: describe(e) }
-      return
-    }
-    try {
-      if (keyDraft.trim()) await setAiKey(connection.id, keyDraft)
-      const next = editing ? connections.map((c) => (c.id === connection.id ? connection : c)) : [...connections, connection]
-      await updateAi({ connections: next, active: settings.ai.active || connection.id })
-    } catch (e) {
-      submit = { state: 'failed', message: describe(e) }
-      return
-    }
-    keyDraft = ''
-    if (!editing) draftId = crypto.randomUUID()
+  /** Keeps a provider the form has checked; the first one becomes the one in use. */
+  async function save(connection: AiConnection, key: string) {
+    if (!settings) return
+    if (key) await setAiKey(connection.id, key)
+    const next = editing ? connections.map((c) => (c.id === connection.id ? connection : c)) : [...connections, connection]
+    await updateAi({ connections: next, active: settings.ai.active || connection.id })
     editing = null
     adding = false
     await loadKeyStatuses()
@@ -356,7 +241,7 @@
       </header>
 
       {#if settings && status}
-        <div class="body">
+        <div class="body prefs">
           {#if section === 'general'}
             <h4>Shortcut</h4>
             <div class="group">
@@ -398,7 +283,7 @@
               <label class="item">
                 <div class="label">
                   <span>Reverse zoom direction</span>
-                  <span class="desc">On: slide two fingers up to zoom in. Off: like a mouse wheel</span>
+                  <span class="desc">On: slide two fingers up to zoom in. Off: like a mouse wheel. Applies to the map and to pictures</span>
                 </div>
                 <input type="checkbox" class="switch" checked={navigation.invertZoom} onchange={(e) => setNavigation({ invertZoom: e.currentTarget.checked })} />
               </label>
@@ -420,6 +305,13 @@
                 </div>
                 <input type="checkbox" class="switch" checked={settings.startAtLogin} onchange={(e) => update({ startAtLogin: e.currentTarget.checked })} />
               </label>
+              <div class="item">
+                <div class="label">
+                  <span>Setup</span>
+                  <span class="desc">Go through the first-run steps again: folder, AI and shortcut</span>
+                </div>
+                <button class="btn" onclick={onsetup}>Run setup again</button>
+              </div>
             </div>
           {:else if section === 'capture'}
             <h4>Links</h4>
@@ -445,42 +337,40 @@
             </div>
           {:else if section === 'usage'}
             {#if usage}
-              <h4>Today</h4>
-              <div class="group usage">
-                {#each [{ label: 'Notes', used: usage.countedToday, limit: settings.ai.dailyLimit, key: 'dailyLimit', unit: 'requests', hint: 'The most requests per day for titles, summaries, links, topic names and pictures. 0 means no limit.' }, { label: 'Questions', used: usage.asksToday, limit: settings.ai.askPerDay, key: 'askPerDay', unit: 'questions', hint: 'The most questions you can ask of your notes per day. 0 means no limit.' }] as m (m.key)}
-                  <div class="meter" title={m.hint}>
+              {#each [{ label: 'Notes', about: 'Titles, summaries, links, topic names and pictures', used: usage.countedToday, limit: settings.ai.dailyLimit, key: 'dailyLimit', unit: 'requests', step: 50, fallback: 500, hint: 'Stops this work for the day after this many requests, to keep costs predictable.' }, { label: 'Questions', about: 'Each question takes a few requests, more for bigger ones', used: usage.asksToday, limit: settings.ai.askPerDay, key: 'askPerDay', unit: 'questions', step: 5, fallback: 20, hint: 'Stops questions for the day after this many.' }] as m (m.key)}
+                <h4>{m.label} today</h4>
+                <div class="group usage">
+                  <div class="meter">
                     <div class="meter-head">
-                      <span>{m.label}</span>
-                      <span class="figure">
-                        {m.used} of
-                        <input class="input limit" type="number" min="0" step={m.key === 'dailyLimit' ? 50 : 5} value={m.limit} aria-label={`${m.label} per day (0 for no limit)`} onchange={(e) => updateAi({ [m.key]: Math.max(0, Math.floor(Number(e.currentTarget.value) || 0)) })} />
-                        {m.unit}
-                      </span>
+                      <span class="desc">{m.about}</span>
+                      <span class="figure">{m.used}{m.limit > 0 ? ` of ${m.limit}` : ''} {m.unit}</span>
                     </div>
                     <div class="bar" class:warm={filled(m.used, m.limit) >= 0.8} class:full={filled(m.used, m.limit) >= 1}>
                       <span style:width={`${filled(m.used, m.limit) * 100}%`}></span>
                     </div>
                     {#if m.limit > 0 && m.used >= m.limit}
-                      <p class="usage-note warn">Used up for today. It starts again tomorrow, or raise the limit.</p>
+                      <p class="usage-note warn">Used up for today. It starts again tomorrow, or raise or switch off the limit below.</p>
                     {/if}
                   </div>
-                {/each}
-              </div>
-
-              <h4>Last 7 days</h4>
-              <div class="group usage">
-                <div class="week" role="img" aria-label={`Requests over the last week: ${usage.days.map((d) => d.calls).join(', ')}`}>
-                  {#each usage.days as d, i (d.day)}
-                    <div class="col" title={`${weekday(d.day)}: ${d.calls} requests${d.tokens ? `, ${compact(d.tokens)} tokens` : ''}`}>
-                      <span class="count">{d.calls || ''}</span>
-                      <span class="column"><span class="fill" class:today={i === usage.days.length - 1} style:height={`${Math.max(d.calls ? 6 : 2, (d.calls / busiest) * 100)}%`}></span></span>
-                      <span class="day">{i === usage.days.length - 1 ? 'Today' : weekday(d.day)}</span>
+                  <div class="item">
+                    <div class="label">
+                      <span>Limit per day</span>
+                      <span class="desc">{m.limit > 0 ? m.hint : `No limit: ${m.unit} keep going as long as the provider allows.`}</span>
                     </div>
-                  {/each}
+                    {#if m.limit > 0}
+                      <input class="input num" type="number" min="1" step={m.step} value={m.limit} aria-label={`${m.label} limit per day`} onchange={(e) => setLimit(m.key, Number(e.currentTarget.value))} />
+                    {/if}
+                    <input type="checkbox" class="switch" checked={m.limit > 0} aria-label={`Limit ${m.unit} per day`} onchange={(e) => setLimit(m.key, e.currentTarget.checked ? (lastLimit[m.key] ?? m.fallback) : 0)} />
+                  </div>
                 </div>
+              {/each}
+
+              <h4>Last two weeks</h4>
+              <div class="group usage">
+                <UsageChart days={usage.days} names={PURPOSES} />
               </div>
 
-              <h4>Requests today</h4>
+              <h4>What today's requests were for</h4>
               <div class="group usage">
                 {#if usage.byPurpose.length}
                   <ul class="purposes">
@@ -488,8 +378,8 @@
                       <li>
                         <span class="what">{PURPOSES[p.purpose] ?? p.purpose}</span>
                         <span class="how">
-                          {#if p.limited}<span class="flag warn" title="The provider asked to slow down">{p.limited} slowed</span>{/if}
-                          {#if p.failed}<span class="flag bad" title="Requests that failed">{p.failed} failed</span>{/if}
+                          {#if p.limited}<span class="flag warn tip" tabindex="0" role="note" data-tip={`The provider asked Plexus to slow down ${p.limited} ${p.limited === 1 ? 'time' : 'times'}. Plexus waits and tries again, but a free plan can run out. The Economy question size uses fewer requests.`}>{p.limited} slowed</span>{/if}
+                          {#if p.failed}<span class="flag bad tip" tabindex="0" role="note" data-tip="Requests the provider refused or that never came back.">{p.failed} failed</span>{/if}
                           {#if p.tokensIn + p.tokensOut}<span class="muted">{compact(p.tokensIn + p.tokensOut)} tokens</span>{/if}
                         </span>
                         <span class="n">{p.calls}</span>
@@ -499,73 +389,13 @@
                 {:else}
                   <p class="usage-note empty">Nothing yet today.</p>
                 {/if}
+                {#if usage.today.tokensIn + usage.today.tokensOut}
+                  <p class="usage-note">{compact(usage.today.tokensIn)} tokens sent and {compact(usage.today.tokensOut)} received today.</p>
+                {/if}
               </div>
             {/if}
           {:else if section === 'ai' && adding}
-            <!-- Add a provider -->
-            <div class="group">
-              <div class="item">
-                <div class="label"><span>Provider</span></div>
-                <Select value={presetId} options={providerOptions} onchange={pickPreset} label="Provider" width={240} disabled={!!editing} />
-              </div>
-
-              {#if !preset.local}
-                <div class="item">
-                  <div class="label">
-                    <span>Key</span>
-                    <span class="desc">{keyKept ? 'Saved in your keychain. Paste a new one to replace it' : 'Kept in your system keychain, never in a file'}</span>
-                  </div>
-                  <!-- svelte-ignore a11y_autofocus -->
-                  <input
-                    class="input field"
-                    class:saved={keyKept && !keyDraft}
-                    type="password"
-                    autocomplete="off"
-                    autofocus
-                    bind:value={keyDraft}
-                    placeholder={keyKept ? '••••••••••••••••' : 'Paste your key'}
-                    aria-label="API key"
-                    onchange={loadModels}
-                  />
-                </div>
-              {/if}
-
-              <div class="item">
-                <div class="label">
-                  <span>Model</span>
-                  <span class="desc">
-                    {#if modelsState === 'loading'}Loading the list…
-                    {:else if modelsState === 'failed'}<span class="error" title={modelsError}>Couldn't load the list</span>
-                    {:else if models.length}{models.length} available
-                    {:else if !preset.local && !keyKept && !keyDraft.trim()}Paste your key to see the list{/if}
-                  </span>
-                </div>
-                {#if typingModel}
-                  <!-- svelte-ignore a11y_autofocus -->
-                  <input class="input field" autofocus bind:value={model} placeholder="model name" aria-label="Model name" />
-                {:else}
-                  <Select value={model} options={modelOptions} onchange={pickModel} label="Model" width={240} placeholder="Choose a model" />
-                {/if}
-              </div>
-
-              <div class="item">
-                <div class="label">
-                  <span>Name</span>
-                  <span class="desc">Optional, to tell providers apart</span>
-                </div>
-                <input class="input field" bind:value={nameDraft} placeholder={editing?.name ?? autoName} aria-label="Name" />
-              </div>
-            </div>
-
-            {#if submit.state === 'failed'}
-              <p class="problem" role="alert">{submit.message}</p>
-            {/if}
-            <div class="actions">
-              <button class="btn" onclick={() => (adding = false)}>Cancel</button>
-              <button class="btn primary" onclick={add} disabled={!canAdd}>
-                {submit.state === 'checking' ? 'Checking…' : editing ? 'Save' : 'Add provider'}
-              </button>
-            </div>
+            <ProviderForm {connections} {editing} {keyKept} onsave={save} oncancel={() => (adding = false)} />
           {:else if section === 'ai'}
             <h4>Providers</h4>
             <div class="group" role="radiogroup" aria-label="Provider in use">
@@ -630,10 +460,24 @@
                 <div class="item" title="Tries the model in use on a small made-up question, to see whether it can drive Ask.">
                   <div class="label">
                     <span>Check this model</span>
-                    <span class="desc" class:bad={askChecked && !askChecked.ok}>{askChecking ? 'Trying a small question…' : (askChecked?.message ?? 'Finds out early whether the model can answer from your notes')}</span>
+                    <span class="desc">Asks it a small made-up question, to find out early whether it can answer from your notes</span>
                   </div>
-                  <button class="btn" onclick={checkAsk} disabled={askChecking || !settings.ai.connections.length}>{askChecking ? 'Checking…' : 'Check'}</button>
+                  <button class="btn" onclick={checkAsk} disabled={askChecking || !settings.ai.connections.length}>{askChecking ? 'Checking…' : askChecked ? 'Check again' : 'Check'}</button>
                 </div>
+                {#if askChecking || askChecked}
+                  <div class="verdict" class:ok={askChecked?.ok} class:bad={askChecked && !askChecked.ok} role="status" bind:this={verdict}>
+                    {#if askChecking}
+                      <span class="spin" aria-hidden="true"></span>
+                      <div><strong>Trying a small question…</strong><span>This takes a few seconds.</span></div>
+                    {:else if askChecked}
+                      <span class="mark" aria-hidden="true"><Icon name={askChecked.ok ? 'check' : 'close'} size={16} /></span>
+                      <div>
+                        <strong>{askChecked.ok ? (askChecked.protocol === 'tools' ? 'Yes, this model can answer from your notes' : 'Yes, with simpler steps') : "No, this model couldn't answer from your notes"}</strong>
+                        <span>{askChecked.message}</span>
+                      </div>
+                    {/if}
+                  </div>
+                {/if}
               </div>
 
               <h4>Notes</h4>
@@ -818,68 +662,11 @@
     margin-top: 6px;
   }
 
-  .group {
-    border-radius: 12px;
-    background: var(--group);
-  }
-
-  .item {
-    position: relative;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-height: 56px;
-    padding: 10px 14px;
-  }
-
-  /* A faint hairline, inset from the edges, between rows. */
-  .item + .item::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 14px;
-    right: 14px;
-    height: 1px;
-    background: var(--line);
-  }
-
-  label.item {
-    cursor: pointer;
-  }
-
-  .label {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .desc {
-    color: var(--text-muted);
-    font-size: 12px;
-  }
-
   .path {
     font-family: var(--mono);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .error {
-    color: var(--danger);
-  }
-
-  .warn {
-    color: var(--warning);
-  }
-
-  /* A provider in the list: the name area chooses it. */
-  /* A saved key is never shown, only that there is one: dots in the normal text colour. */
-  .input.saved::placeholder {
-    color: var(--text);
-    opacity: 0.75;
-    letter-spacing: 0.15em;
   }
 
   .row {
@@ -907,44 +694,17 @@
     box-shadow: inset 0 0 0 5px var(--accent);
   }
 
-  .tag {
-    padding: 2px 9px;
-    border-radius: 999px;
-    background: var(--accent-soft);
-    color: var(--accent);
-    font-size: 12px;
-    font-weight: 500;
-  }
-
-  .actions {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 8px;
-    margin-top: 14px;
-  }
-
-  .actions.start {
-    justify-content: flex-start;
-  }
-
-  .problem {
-    margin: 12px 2px 0;
-    color: var(--danger);
-    overflow-wrap: anywhere;
-  }
-
   .desc.bad {
     color: var(--warning);
   }
 
   /* Usage: two meters, a week of bars, and what the calls were for. */
   .usage {
-    padding: 4px 0 10px;
+    padding: 0;
   }
 
   .meter {
-    padding: 10px 14px 4px;
+    padding: 12px 14px 12px;
   }
 
   .meter-head {
@@ -964,16 +724,12 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .input.limit {
-    width: 64px;
-    height: 24px;
-    padding: 0 6px;
-    text-align: right;
-    font-size: 12px;
+  .usage-note.empty {
+    margin: 12px 14px;
   }
 
-  .usage-note.empty {
-    margin: 8px 14px;
+  .usage .item {
+    border-top: 1px solid var(--line);
   }
 
   .bar {
@@ -1000,7 +756,7 @@
   }
 
   .usage-note {
-    margin: 8px 14px 0;
+    margin: 10px 14px 12px;
     color: var(--text-muted);
     font-size: 12px;
   }
@@ -1010,44 +766,11 @@
     color: var(--warning);
   }
 
-  .week {
-    display: grid;
-    grid-template-columns: repeat(7, 1fr);
-    gap: 8px;
-    margin: 14px 14px 4px;
-    height: 96px;
-  }
 
-  .col {
-    display: grid;
-    grid-template-rows: 14px 1fr 14px;
-    justify-items: center;
-    min-width: 0;
-  }
 
-  .col .count,
-  .col .day {
-    color: var(--text-muted);
-    font-size: 11px;
-    font-variant-numeric: tabular-nums;
-  }
 
-  .col .column {
-    width: 100%;
-    max-width: 28px;
-    display: flex;
-    align-items: flex-end;
-  }
 
-  .col .fill {
-    width: 100%;
-    border-radius: 4px 4px 2px 2px;
-    background: color-mix(in srgb, var(--accent) 40%, transparent);
-  }
 
-  .col .fill.today {
-    background: var(--accent);
-  }
 
   .purposes {
     list-style: none;
@@ -1096,6 +819,110 @@
     color: var(--danger);
   }
 
+  /* A hover note on a tag: small, and out of the way until asked for. */
+  .tip {
+    position: relative;
+    cursor: help;
+  }
+
+  .tip::after {
+    content: attr(data-tip);
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 6px);
+    z-index: 3;
+    width: 220px;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--popover);
+    box-shadow: var(--shadow);
+    color: var(--text);
+    font-size: 11px;
+    font-weight: 400;
+    line-height: 1.4;
+    white-space: normal;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 120ms;
+  }
+
+  .tip:hover::after,
+  .tip:focus-visible::after {
+    opacity: 1;
+  }
+
+  .verdict {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin: 0 10px 10px;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    background: var(--fill);
+    font-size: 12px;
+  }
+
+  .verdict > div {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .verdict strong {
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .verdict span:not(.mark):not(.spin) {
+    color: var(--text-muted);
+  }
+
+  .verdict .mark {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+  }
+
+  .verdict.ok {
+    background: color-mix(in srgb, var(--kind-code) 14%, transparent);
+  }
+
+  .verdict.ok .mark {
+    background: var(--kind-code);
+    color: white;
+  }
+
+  .verdict.bad {
+    background: color-mix(in srgb, var(--danger) 14%, transparent);
+  }
+
+  .verdict.bad .mark {
+    background: var(--danger);
+    color: white;
+  }
+
+  .verdict .spin {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    margin: 3px;
+    border: 2px solid var(--fill-hover);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: turn 0.8s linear infinite;
+  }
+
+  @keyframes turn {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
   .note {
     margin: 10px 2px 0;
     color: var(--text-muted);
@@ -1104,10 +931,6 @@
 
   .key {
     width: 170px;
-  }
-
-  .field {
-    width: 240px;
   }
 
   .num {

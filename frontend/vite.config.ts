@@ -1,13 +1,41 @@
-import { resolve } from 'node:path'
+import { readdirSync, readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { dirname, join, resolve } from 'node:path'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
+
+/** pdf.js loads fonts, character maps and image decoders on demand; they're served from
+ * `/pdfjs/<folder>/` (copied into the build, served from node_modules in dev). */
+function pdfjsAssets(): Plugin {
+  const root = dirname(createRequire(import.meta.url).resolve('pdfjs-dist/package.json'))
+  const folders = ['standard_fonts', 'cmaps', 'wasm']
+  return {
+    name: 'pdfjs-assets',
+    configureServer(server) {
+      server.middlewares.use('/pdfjs/', (req, res, next) => {
+        const [folder, file] = (req.url ?? '').split('?')[0].replace(/^\//, '').split('/')
+        if (!folders.includes(folder) || !file || file.includes('..')) return next()
+        try {
+          res.end(readFileSync(join(root, folder, file)))
+        } catch {
+          next()
+        }
+      })
+    },
+    generateBundle() {
+      for (const folder of folders)
+        for (const file of readdirSync(join(root, folder)))
+          this.emitFile({ type: 'asset', fileName: `pdfjs/${folder}/${file}`, source: readFileSync(join(root, folder, file)) })
+    },
+  }
+}
 
 // Tauri expects a fixed dev port and handles its own logging.
 // https://v2.tauri.app/start/frontend/vite/
 const host = process.env.TAURI_DEV_HOST
 
 export default defineConfig({
-  plugins: [svelte()],
+  plugins: [svelte(), pdfjsAssets()],
   clearScreen: false,
   server: {
     port: 1430,

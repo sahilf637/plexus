@@ -16,6 +16,17 @@ export interface Settings {
   /** Save text copied anywhere, without pasting it into Plexus. */
   watchClipboard: boolean
   ai: AiSettings
+  /** The first-run setup was finished or skipped. */
+  setupDone: boolean
+}
+
+/** A library folder being considered in setup. */
+export interface FolderInfo {
+  path: string
+  /** Notes it already holds. */
+  notes: number
+  /** It is the library open now. */
+  current: boolean
 }
 
 export type ProviderKind = 'openai' | 'anthropic' | 'gemini'
@@ -67,6 +78,14 @@ export interface ModelInfo {
   id: string
   /** Reads images. */
   vision: boolean
+}
+
+/** Why checking a provider or listing its models failed. `message` is a plain sentence, never the
+ * provider's own words. `kind` says what to blame: the `key`, the `address`, a `network` problem,
+ * the provider being `busy`, or the `model` (anything else). */
+export interface AiProblem {
+  kind: 'key' | 'address' | 'network' | 'busy' | 'model' | 'other'
+  message: string
 }
 
 /** Where AI enrichment stands, shown in the map's header. */
@@ -312,8 +331,8 @@ export interface UsageTotals {
 
 export interface UsageReport {
   today: UsageTotals
-  /** The last seven days, oldest first. */
-  days: { day: string; calls: number; tokens: number }[]
+  /** The last two weeks, oldest first, each with what its requests were for. */
+  days: { day: string; calls: number; tokens: number; by: { purpose: string; calls: number; tokens: number }[] }[]
   /** Today, by what the calls were for (`notes`, `images`, `topics`, `ask`, `check`, `other`). */
   byPurpose: ({ purpose: string } & UsageTotals)[]
   /** Calls counted against the daily limit today. */

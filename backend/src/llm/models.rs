@@ -1,6 +1,8 @@
 //! The models a provider offers, for the dropdown in Settings. Each provider lists them its own
-//! way; the lists include models that can't chat (embeddings, speech, image generation), which
-//! are left out, and models that can read images are marked.
+//! way; the lists include models that can't chat (embeddings, speech, image and music generation,
+//! live voice, models that only work through another API), which are left out, and models that can
+//! read images are marked. Whether a model is open to this key and plan only shows when it is
+//! tried; the form remembers the ones that failed.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -93,15 +95,18 @@ fn parse_gemini(json: &Value) -> Vec<Model> {
         .collect()
 }
 
-/// Leaves out what can't hold a conversation: embeddings, speech, image and video generation,
-/// moderation.
+/// Leaves out what can't answer a plain text request: embeddings, speech, image, video and music
+/// generation, live voice, moderation, and models that only work through another API.
 fn is_chat_model(id: &str) -> bool {
-    const NOT_CHAT: [&str; 14] = [
+    const NOT_CHAT: [&str; 28] = [
         "embed", "whisper", "tts", "transcribe", "dall-e", "moderation", "realtime", "audio", "imagen", "veo", "rerank",
-        "image-generation", "gpt-image", "aqa",
+        "image", "aqa", "-live", "lyria", "nano-banana", "computer-use", "robotics", "deep-research", "learnlm", "guard",
+        "orpheus", "playai", "sora", "davinci", "babbage", "turbo-instruct", "codex",
     ];
+    // Answer only through OpenAI's newer API, not the chat one.
+    const OTHER_API: [&str; 3] = ["o1-pro", "o3-pro", "gpt-5-pro"];
     let id = id.to_ascii_lowercase();
-    !NOT_CHAT.iter().any(|word| id.contains(word))
+    !NOT_CHAT.iter().chain(OTHER_API.iter()).any(|word| id.contains(word))
 }
 
 /// A guess from the name, for servers that don't say what a model reads.
@@ -154,5 +159,23 @@ mod tests {
             { "name": "models/gemma-3-27b-it", "supportedGenerationMethods": ["generateContent"] }
         ]});
         assert_eq!(ids(&parse_gemini(&gemini)), [("gemini-2.5-flash", true), ("gemma-3-27b-it", false)]);
+    }
+
+    #[test]
+    fn models_that_cannot_answer_in_text_are_left_out() {
+        for id in [
+            "gemini-3.1-flash-image", "gemini-2.5-flash-image-preview", "gemini-3-pro-image-preview", "gemini-2.5-flash-preview-tts",
+            "gemini-2.5-flash-native-audio-preview", "gemini-2.0-flash-live-001", "gemini-2.5-computer-use-preview", "lyria-realtime",
+            "nano-banana-pro-preview", "gemini-robotics-er-1.5-preview", "deep-research-pro-preview", "gpt-image-1", "chatgpt-image-latest",
+            "gpt-3.5-turbo-instruct", "gpt-5-codex", "o3-pro", "gpt-5-pro", "meta-llama/llama-guard-4-12b", "playai-tts", "sora-2",
+        ] {
+            assert!(!is_chat_model(id), "{id}");
+        }
+        for id in [
+            "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro", "gemini-3-flash-preview", "gpt-4o-mini", "gpt-5", "o3-mini",
+            "llama-3.3-70b-versatile", "meta-llama/llama-3.1-8b-instruct", "claude-sonnet-5-5", "qwen3:8b",
+        ] {
+            assert!(is_chat_model(id), "{id}");
+        }
     }
 }

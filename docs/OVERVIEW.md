@@ -262,7 +262,10 @@ How a question runs (details in [plans/M4.md](plans/M4.md)):
 
 ## 8. Usability
 
-- First run works immediately: no account, no API key. "Connect an AI" is an upgrade.
+- First run works immediately: no account, no API key. A short setup (library folder, optional AI,
+  the shortcut) can be skipped at any step; "Connect an AI" is an upgrade. See [plans/P1.md](plans/P1.md).
+- Reading: the item panel widens into a reader (`E`), PDFs show their pages, pictures open full
+  size, and an Ask source opens its note at the quoted passage.
 - One action: press the hotkey anywhere, paste, Enter. Also tray and drag-drop.
 - The home screen is the map, with plain-language prompts ("3 new connections", "Your *Rust* topic
   grew this week").

@@ -26,6 +26,14 @@ pub struct Settings {
     /// Save text copied anywhere, without pasting it into Plexus. Off by default.
     pub watch_clipboard: bool,
     pub ai: AiSettings,
+    /// The first-run setup was finished or skipped. False for a new install; a settings file from
+    /// before setup existed belongs to someone already using Plexus, so a missing field means true.
+    #[serde(default = "yes")]
+    pub setup_done: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// The AI side of the settings. API keys are not here: each connection's key lives in the
@@ -192,6 +200,7 @@ impl Default for Settings {
             fetch_links: true,
             watch_clipboard: false,
             ai: AiSettings::default(),
+            setup_done: false,
         }
     }
 }
@@ -280,5 +289,12 @@ mod tests {
         assert_eq!(settings.hotkey, "Ctrl+Shift+Space");
         assert_eq!(settings.hotkey_action, HotkeyAction::OpenCapture);
         assert!(settings.start_at_login);
+    }
+
+    #[test]
+    fn only_a_new_install_runs_setup() {
+        assert!(!Settings::default().setup_done);
+        let existing: Settings = serde_json::from_str(r#"{"hotkey":"Ctrl+Alt+V"}"#).unwrap();
+        assert!(existing.setup_done);
     }
 }

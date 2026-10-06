@@ -29,6 +29,13 @@
     | 'target'
     | 'copy'
     | 'chart'
+    | 'lock'
+    | 'keyboard'
+    | 'more'
+    | 'expand'
+    | 'collapse'
+    | 'zoom-in'
+    | 'zoom-out'
 </script>
 
 <script lang="ts">
@@ -37,6 +44,13 @@
 
   const paths: Record<IconName, string> = {
     chart: 'M5 20V11M12 20V4M19 20v-6',
+    lock: 'M8 11V8a4 4 0 0 1 8 0v3M6 11h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1z',
+    keyboard: 'M4 6h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1zM7 10h.01M11 10h.01M15 10h.01M8 14h8',
+    more: 'M5 12a1 1 0 1 0 2 0 1 1 0 0 0-2 0zM11 12a1 1 0 1 0 2 0 1 1 0 0 0-2 0zM17 12a1 1 0 1 0 2 0 1 1 0 0 0-2 0z',
+    expand: 'M14 4h6v6M10 20H4v-6M20 4l-6.5 6.5M4 20l6.5-6.5',
+    collapse: 'M20 10h-6V4M4 14h6v6M14 10l6.5-6.5M10 14l-6.5 6.5',
+    'zoom-in': 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4M11 8v6M8 11h6',
+    'zoom-out': 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4M8 11h6',
     history: 'M4 12a8 8 0 1 0 2.3-5.7M4 5v4h4M12 8v4l3 2',
     send: 'M5 12l14-7-5 14-2.5-5.5z',
     stop: 'M7 7h10v10H7z',

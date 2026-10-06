@@ -37,12 +37,15 @@
   const SEARCH_FROM = 10
   const GAP = 6
   const MARGIN = 12
+  /** The list grows past the button to fit long names, up to this wide. */
+  const MAX_WIDTH = 480
 
   let open = $state(false)
   let query = $state('')
   let active = $state(0)
   let trigger = $state<HTMLButtonElement>()
   let list = $state<HTMLDivElement>()
+  let popover = $state<HTMLDivElement>()
   let place = $state({ left: 0, top: 0, width: 0, maxHeight: 280, up: false })
 
   const selected = $derived(options.find((o) => o.value === value))
@@ -69,6 +72,11 @@
     active = Math.max(0, options.findIndex((o) => o.value === value))
     open = true
     await tick()
+    // It is as wide as its longest name, so it may now run off the screen.
+    if (popover) {
+      const room = window.innerWidth - popover.offsetWidth - MARGIN
+      if (place.left > room) place.left = Math.max(MARGIN, room)
+    }
     list?.focus()
     scrollToActive()
   }
@@ -154,7 +162,7 @@
   onclick={() => (open ? hide() : show())}
   onkeydown={ontriggerkey}
 >
-  <span class="value" class:placeholder={!selected}>{selected?.label ?? placeholder}</span>
+  <span class="value" class:placeholder={!selected} title={selected?.label}>{selected?.label ?? placeholder}</span>
   <Icon name="chevron-down" size={15} />
 </button>
 
@@ -162,10 +170,12 @@
   <div
     class="popover"
     class:up={place.up}
+    bind:this={popover}
     style:left={`${place.left}px`}
     style:top={place.up ? undefined : `${place.top}px`}
     style:bottom={place.up ? `${window.innerHeight - place.top}px` : undefined}
-    style:width={`${place.width}px`}
+    style:min-width={`${place.width}px`}
+    style:max-width={`${Math.min(MAX_WIDTH, window.innerWidth - 2 * MARGIN)}px`}
   >
     {#if searchable}
       <input
@@ -193,6 +203,7 @@
           class="option"
           class:current={option.value === value}
           aria-selected={option.value === value}
+          title={option.label}
           data-active={i === active}
           onclick={() => choose(option)}
           onpointermove={() => (active = i)}
@@ -253,6 +264,7 @@
   .popover {
     position: fixed;
     z-index: 50;
+    width: max-content;
     padding: 4px;
     border-radius: 12px;
     background: var(--popover);

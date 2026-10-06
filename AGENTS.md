@@ -18,6 +18,8 @@ change). M3 adds topics: a tree of groups built locally from the links, named lo
 AI), shown on the map as regions that change with the zoom, kept stable as the library grows, plus
 an optional slow pass that improves older notes. M4 adds Ask: a read-only agent that answers a
 question from the notes with six small tools, checked citations and its path shown on the map.
+P1 ([plan](docs/plans/P1.md)) polishes it: a first-run setup (folder, optional AI, shortcut) and a
+reader in the item panel (wide mode, PDF pages, full-size pictures, citations opened at the quote).
 Next: M5 (scale, imports, MCP).
 
 ## Principles
@@ -87,7 +89,10 @@ frontend/              Svelte 5 + Vite; two entries: index.html (map), capture.h
   src/lib/graph/       Sigma setup, reducers, layout worker, topic regions, the Ask agent's path (`path.ts`)
   src/lib/ask.svelte.ts  Ask state shared by the panel and the map
   src/capture/         capture window
-  src/components/      map UI components
+  src/components/      map UI components; `Setup.svelte` (first-run setup), `ProviderForm.svelte` (shared with
+                       Settings), `ItemPanel.svelte` (docked panel and wide reader), `PdfView.svelte` (pdf.js,
+                       loaded on demand), `Lightbox.svelte`
+  src/lib/quote.ts     finds and marks an Ask source's quoted passage in a shown note or PDF page
 backend/               Tauri v2 crate `plexus`
   src/library/         note files: paths, frontmatter, originals, reconcile, trash, hand-made links
   src/db/              SQLite index: migrations, items, edges, search

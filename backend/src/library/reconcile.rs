@@ -109,7 +109,7 @@ pub fn modified_nanos(stat: &fs::Metadata) -> i64 {
 }
 
 /// Every `.md` file under `dir`, skipping hidden folders.
-fn note_files(dir: &Path) -> Vec<PathBuf> {
+pub(crate) fn note_files(dir: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(dir) = stack.pop() {

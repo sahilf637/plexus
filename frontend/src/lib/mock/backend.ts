@@ -12,6 +12,8 @@ let settings: Settings = {
   fetchLinks: true,
   watchClipboard: false,
   ai: { enabled: false, connections: [], active: '', dailyLimit: 500, askPerDay: 20, askProfile: 'standard', improveOld: false, improvePerDay: 10 },
+  // `/?setup` shows the first-run setup.
+  setupDone: typeof location === 'undefined' || !new URLSearchParams(location.search).has('setup'),
 }
 
 // The keychain, the AI queue and what the AI said (concepts and typed links), simulated.
@@ -262,12 +264,10 @@ function preview(text: string): Preview {
   return { kind, language: null, title: firstLine.replace(/^[#>*\-\s]+/, '').slice(0, 80), secret }
 }
 
-const status: HotkeyStatus = {
-  backend: 'portal',
-  trigger: 'Ctrl+Alt+V',
-  error: null,
-  systemConfigurable: true,
-}
+// Before setup the shortcut isn't registered yet; `start_hotkey` does it.
+const status: HotkeyStatus = settings.setupDone
+  ? { backend: 'portal', trigger: 'Ctrl+Alt+V', error: null, systemConfigurable: true }
+  : { backend: 'none', trigger: null, error: null, systemConfigurable: false }
 
 type Command = (args: Record<string, unknown>, headers?: Record<string, string>) => unknown
 
@@ -295,19 +295,24 @@ const commands: Record<string, Command> = {
     if (key && enrichState.state === 'paused') setStatus({ state: 'idle', pending: 0, message: null })
   },
   test_ai: async (args) => {
+    const badKey = { kind: 'key', message: "The provider didn't accept this key. Check it and try again." }
     await new Promise((done) => setTimeout(done, 700))
     const c = args.connection as AiConnection
-    if (!String(args.key ?? '').trim() && !keys.has(c.id) && !isLocal(c.preset)) throw new Error("the provider didn't accept the key: no key set")
-    if (String(args.key ?? '').includes('bad')) throw new Error("the provider didn't accept the key: Incorrect API key")
+    if (!String(args.key ?? '').trim() && !keys.has(c.id) && !isLocal(c.preset)) throw badKey
+    if (String(args.key ?? '').includes('bad')) throw badKey
+    // A model that is over its limit, and one that answers with nothing usable.
+    if (c.model === 'gemma-3-27b-it') throw { kind: 'model', message: 'Something went wrong with this model. Try a different one.' }
+    if (c.model === 'o3-mini') throw { kind: 'busy', message: 'The provider is busy, or this model is over its limit right now. Try again shortly, or pick a different model.' }
   },
   list_ai_models: async (args): Promise<ModelInfo[]> => {
+    const badKey = { kind: 'key', message: "The provider didn't accept this key. Check it and try again." }
     await new Promise((done) => setTimeout(done, 500))
     const c = args.connection as AiConnection
-    if (!String(args.key ?? '').trim() && !keys.has(c.id) && !isLocal(c.preset)) throw new Error("the provider didn't accept the key: no key set")
+    if (!String(args.key ?? '').trim() && !keys.has(c.id) && !isLocal(c.preset)) throw badKey
     const lists: Record<string, ModelInfo[]> = {
       openai: [{ id: 'gpt-4.1', vision: true }, { id: 'gpt-4o-mini', vision: true }, { id: 'o3-mini', vision: false }],
       anthropic: [{ id: 'claude-haiku-4-5-20251001', vision: true }, { id: 'claude-sonnet-5-5', vision: true }],
-      gemini: [{ id: 'gemini-2.5-flash', vision: true }, { id: 'gemma-3-27b-it', vision: false }],
+      gemini: [{ id: 'gemini-2.5-flash', vision: true }, { id: 'gemini-2.5-flash-lite-preview-09-2025', vision: true }, { id: 'gemma-3-27b-it', vision: false }],
       groq: [{ id: 'llama-3.3-70b-versatile', vision: false }, { id: 'llama-4-scout', vision: true }],
       ollama: [{ id: 'llama3.2', vision: false }, { id: 'llava:13b', vision: true }],
     }
@@ -332,6 +337,14 @@ const commands: Record<string, Command> = {
   },
   hotkey_status: () => status,
   configure_hotkey: () => {},
+  start_hotkey: () =>
+    void setTimeout(() => Object.assign(status, { backend: 'portal', trigger: settings.hotkey, error: null, systemConfigurable: true }), 600),
+  inspect_folder: (args) => {
+    const path = String(args.path ?? settings.libraryPath)
+    return { path, notes: path === settings.libraryPath ? items.length : path.includes('Notes') ? 124 : 0, current: path === settings.libraryPath }
+  },
+  pick_folder: () => window.prompt('Folder', '~/Documents/Notes') || null,
+  restart_app: () => location.reload(),
   // In the browser the capture window is its own page: open it in a new tab.
   show_capture: () => void window.open('/capture.html', 'plexus-capture'),
   hide_capture: () => void window.close(),
@@ -475,10 +488,20 @@ const commands: Record<string, Command> = {
     ].filter((p) => p.calls > 0)
     const calls = byPurpose.reduce((n, p) => n + p.calls, 0)
     const counted = byPurpose.filter((p) => p.purpose !== 'ask').reduce((n, p) => n + p.calls, 0)
-    const earlier = [12, 140, 0, 64, 31, 88]
+    // Two weeks of made-up history: [notes, questions, topics] per day, oldest first.
+    const earlier: [number, number, number][] = [[0, 0, 0], [4, 0, 0], [22, 8, 2], [9, 14, 0], [0, 0, 0], [0, 6, 0], [31, 22, 5], [12, 0, 3], [60, 41, 8], [88, 52, 12], [24, 18, 2], [40, 9, 4], [18, 31, 1]]
+    const row = (d: number, [n, q, t]: [number, number, number]) => {
+      const by = [
+        { purpose: 'notes', calls: n, tokens: n * 1040 },
+        { purpose: 'ask', calls: q, tokens: q * 2400 },
+        { purpose: 'topics', calls: t, tokens: t * 900 },
+      ].filter((p) => p.calls > 0)
+      return { day: day(d), calls: n + q + t, tokens: by.reduce((x, p) => x + p.tokens, 0), by }
+    }
+    const todayBy = byPurpose.map((p) => ({ purpose: p.purpose, calls: p.calls, tokens: p.tokensIn + p.tokensOut }))
     return {
       today: { calls, failed: byPurpose.reduce((n, p) => n + p.failed, 0), limited: byPurpose.reduce((n, p) => n + p.limited, 0), tokensIn: calls * 900, tokensOut: calls * 140 },
-      days: [...earlier.map((c, i) => ({ day: day(6 - i), calls: c, tokens: c * 1040 })), { day: day(0), calls, tokens: calls * 1040 }],
+      days: [...earlier.map((c, i) => row(13 - i, c)), { day: day(0), calls, tokens: todayBy.reduce((x, p) => x + p.tokens, 0), by: todayBy }],
       byPurpose,
       countedToday: counted,
       asksToday: asked,
@@ -495,6 +518,7 @@ const commands: Record<string, Command> = {
   },
   older_status: (): OlderProgress => ({ done: olderDone, total: 38, today: Math.min(olderDone, settings.ai.improvePerDay) }),
   open_item_file: () => {},
+  open_url: (args) => void window.open(String(args.url), '_blank'),
   open_source: (args) => void window.open(items.find((i) => i.id === args.id)?.sourceUrl ?? '', '_blank'),
   get_item: (args): ItemDetail => {
     const item = items.find((i) => i.id === args.id)
@@ -538,7 +562,11 @@ async function playAsk(ask: Ask) {
   step(2, 'read', `read ${scored[0].title}`, [scored[0].id])
   await pause(800)
   if (stopped.has(ask.id)) return finish({ state: 'stopped', answer: `So far I found "${scored[0].title}".` })
-  const sentence = scored[0].body.split(/(?<=[.!?])\s/)[0]?.trim() ?? scored[0].title
+  // The sentence (from the note or the text read out of its file) sharing the most words.
+  const text = `${scored[0].body}\n${scored[0].extractedText ?? ''}`.replace(/<!-- page \d+ -->/g, '')
+  const sentences = text.split(/(?<=[.!?])\s|\n+/).map((t) => t.replace(/[#>*_|]/g, '').trim()).filter((t) => t.length > 12)
+  const overlap = (t: string) => words.filter((w) => t.toLowerCase().includes(w)).length
+  const sentence = sentences.sort((a, b) => overlap(b) - overlap(a))[0] ?? scored[0].title
   finish({
     state: 'done',
     effort: 'lookup',
