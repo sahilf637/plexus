@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use super::session::Asker;
+use super::budget::Budget;
+use super::session::{Asker, Start};
 use super::tools::Finder;
 use super::{Event, Model};
 use crate::db::{Db, asks};
@@ -107,7 +108,7 @@ fn tune_ask() {
         let model = Counting { inner: &config, calls: Cell::new(0) };
         let mut steps = 0;
         let result = asker
-            .begin(&db, &finder, question, None, 0)
+            .begin(&db, &finder, &Start { question, scope: None, thread: None, per_day: 0, budget: Budget::default() })
             .and_then(|id| asker.execute(&db, &finder, &model, &id, &mut |_: &Event| steps += 1));
         let ask = match result {
             Ok(ask) => ask,

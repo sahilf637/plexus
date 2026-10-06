@@ -9,7 +9,7 @@ use std::sync::{LazyLock, Mutex};
 
 use serde_json::{Value, json};
 
-use super::{Config, LlmError, Request, base64_of, failure, json_from_text, post, with_schema};
+use super::{Config, LlmError, Request, base64_of, failure, json_from_text, note_tokens, post, text_step, tool_step, tools_unsupported, with_schema};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
@@ -41,6 +41,58 @@ pub fn complete(config: &Config, request: &Request) -> Result<Value, LlmError> {
     Err(last)
 }
 
+/// Asks for the model to call one of `request.tools`. Servers that don't take `tool_choice:
+/// required` are asked again with `auto`; ones that can't call tools at all say so (`NoTools`).
+pub fn complete_tools(config: &Config, request: &Request) -> Result<Value, LlmError> {
+    match tool_attempt(config, request, "required") {
+        Err(LlmError::Bad(message)) if message.to_lowercase().contains("tool_choice") => tool_attempt(config, request, "auto"),
+        other => other,
+    }
+}
+
+fn tool_attempt(config: &Config, request: &Request, choice: &str) -> Result<Value, LlmError> {
+    let body = tool_body(config, request, choice);
+    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+    let auth = config.api_key.as_ref().map(|k| format!("Bearer {k}"));
+    let headers: Vec<(&str, &str)> = auth.iter().map(|a| ("authorization", a.as_str())).collect();
+    let reply = post(&url, &headers, &body)?;
+    if !(200..300).contains(&reply.status) {
+        if let Some(why) = tools_unsupported(&reply) {
+            // A complaint about `tool_choice` itself is not "no tools": the caller tries `auto`.
+            if why.to_lowercase().contains("tool_choice") {
+                return Err(LlmError::Bad(why));
+            }
+            return Err(LlmError::NoTools(why));
+        }
+        return Err(failure(&reply));
+    }
+    let json: Value = serde_json::from_str(&reply.body).map_err(|e| LlmError::Bad(format!("unreadable reply: {e}")))?;
+    note_tokens(json["usage"]["prompt_tokens"].as_u64(), json["usage"]["completion_tokens"].as_u64());
+    let message = &json["choices"][0]["message"];
+    if let Some(call) = message["tool_calls"].as_array().and_then(|calls| calls.first()) {
+        let name = call["function"]["name"].as_str().ok_or_else(|| LlmError::Bad("the tool call had no name".into()))?;
+        return tool_step(name, call["function"]["arguments"].clone());
+    }
+    text_step(message["content"].as_str().unwrap_or_default())
+}
+
+fn tool_body(config: &Config, request: &Request, choice: &str) -> Value {
+    let tools: Vec<Value> = request
+        .tools
+        .iter()
+        .map(|t| json!({ "type": "function", "function": { "name": t.name, "description": t.description, "parameters": t.parameters } }))
+        .collect();
+    json!({
+        "model": config.model,
+        "messages": [
+            { "role": "system", "content": request.system },
+            { "role": "user", "content": request.user },
+        ],
+        "tools": tools,
+        "tool_choice": choice,
+    })
+}
+
 fn attempt(config: &Config, request: &Request, mode: Mode) -> Result<Value, LlmError> {
     let body = body(config, request, mode);
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
@@ -51,6 +103,7 @@ fn attempt(config: &Config, request: &Request, mode: Mode) -> Result<Value, LlmE
         return Err(failure(&reply));
     }
     let json: Value = serde_json::from_str(&reply.body).map_err(|e| LlmError::Bad(format!("unreadable reply: {e}")))?;
+    note_tokens(json["usage"]["prompt_tokens"].as_u64(), json["usage"]["completion_tokens"].as_u64());
     let text = json["choices"][0]["message"]["content"]
         .as_str()
         .ok_or_else(|| LlmError::Bad("the reply had no text".into()))?;
@@ -102,7 +155,7 @@ mod tests {
     fn asks_for_structured_output_by_mode() {
         let config = Config { kind: ProviderKind::OpenAi, base_url: "http://x/v1".into(), model: "m".into(), api_key: None };
         let schema = json!({"type": "object"});
-        let request = Request { system: "sys", user: "hi", images: &[], schema: &schema, max_tokens: 10 };
+        let request = Request { system: "sys", user: "hi", images: &[], schema: &schema, max_tokens: 10, tools: &[] };
 
         let strict = body(&config, &request, Mode::Schema);
         assert_eq!(strict["response_format"]["type"], "json_schema");
@@ -117,11 +170,24 @@ mod tests {
     }
 
     #[test]
+    fn tools_go_as_functions_and_must_be_called() {
+        let config = Config { kind: ProviderKind::OpenAi, base_url: "http://x/v1".into(), model: "m".into(), api_key: None };
+        let schema = json!({});
+        let tools = [crate::llm::ToolDef { name: "search".into(), description: "Find notes".into(), parameters: json!({ "type": "object" }) }];
+        let request = Request { system: "sys", user: "hi", images: &[], schema: &schema, max_tokens: 10, tools: &tools };
+        let body = tool_body(&config, &request, "required");
+        assert_eq!(body["tools"][0]["type"], "function");
+        assert_eq!(body["tools"][0]["function"]["name"], "search");
+        assert_eq!(body["tool_choice"], "required");
+        assert!(body.get("response_format").is_none());
+    }
+
+    #[test]
     fn images_go_as_data_urls() {
         let config = Config { kind: ProviderKind::OpenAi, base_url: "http://x/v1".into(), model: "m".into(), api_key: None };
         let schema = json!({});
         let images = [super::super::Image { mime: "image/png".into(), bytes: vec![1, 2, 3] }];
-        let request = Request { system: "s", user: "describe", images: &images, schema: &schema, max_tokens: 10 };
+        let request = Request { system: "s", user: "describe", images: &images, schema: &schema, max_tokens: 10, tools: &[] };
         let content = &body(&config, &request, Mode::Prompt)["messages"][1]["content"];
         assert_eq!(content[0]["image_url"]["url"], "data:image/png;base64,AQID");
         assert_eq!(content[1]["text"], "describe");

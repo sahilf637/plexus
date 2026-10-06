@@ -43,10 +43,24 @@ pub struct AiSettings {
     pub daily_limit: u32,
     /// Most questions asked of the library per day (Ask); 0 means no limit.
     pub ask_per_day: u32,
+    /// How much each question may spend.
+    pub ask_profile: AskProfile,
     /// Slowly enrich the notes saved before AI was switched on, a few a day.
     pub improve_old: bool,
     /// Most older notes improved per day; 0 means only the daily call limit applies.
     pub improve_per_day: u32,
+}
+
+/// How much an Ask question may spend: steps, results, how many notes it starts from and how much
+/// of the conversation it carries. Economy suits free plans with small per-minute limits,
+/// Thorough suits pay-per-use plans.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AskProfile {
+    Economy,
+    #[default]
+    Standard,
+    Thorough,
 }
 
 /// One provider, model and key (the key itself is in the keychain).
@@ -74,6 +88,7 @@ impl Default for AiSettings {
             active: String::new(),
             daily_limit: 500,
             ask_per_day: 20,
+            ask_profile: AskProfile::default(),
             improve_old: false,
             improve_per_day: 10,
         }
@@ -111,6 +126,7 @@ struct RawAi {
     active: String,
     daily_limit: Option<u32>,
     ask_per_day: Option<u32>,
+    ask_profile: Option<AskProfile>,
     improve_old: bool,
     improve_per_day: Option<u32>,
     preset: Option<String>,
@@ -128,6 +144,7 @@ impl From<RawAi> for AiSettings {
             active: raw.active,
             daily_limit: raw.daily_limit.unwrap_or(AiSettings::default().daily_limit),
             ask_per_day: raw.ask_per_day.unwrap_or(AiSettings::default().ask_per_day),
+            ask_profile: raw.ask_profile.unwrap_or_default(),
             improve_old: raw.improve_old,
             improve_per_day: raw.improve_per_day.unwrap_or(AiSettings::default().improve_per_day),
         };

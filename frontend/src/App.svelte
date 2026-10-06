@@ -98,6 +98,16 @@
   const topicItems = $derived(
     selectedTopic ? Object.keys(topics.itemTopic).filter((id) => pathOf(id).some((t) => t.id === selectedTopic)) : null,
   )
+  /** Example questions for the Ask panel: the biggest topics by name, then something general. */
+  const askSuggestions = $derived.by(() => {
+    const top = topics.topics
+      .filter((t) => !t.parentId && t.id !== 'loose' && t.count > 1)
+      .sort((x, y) => y.count - x.count)
+      .slice(0, 3)
+      .map((t) => `What have I saved about ${t.label}?`)
+    return [...top, 'What are the main themes in my notes?'].slice(0, 4)
+  })
+
   /** The Ask agent's path, shown on the map only while the Ask panel itself is showing. */
   const askPath = $derived({
     on: ask.open && !selected && !selectedTopic,
@@ -592,6 +602,7 @@
           onselect={(id) => pick(id)}
           onclose={() => (ask.open = false)}
           onsettings={() => { settingsSection = 'ai'; settingsOpen = true }}
+          suggestions={askSuggestions}
         />
       {/if}
       {#if marked.length > 1}

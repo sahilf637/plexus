@@ -79,7 +79,10 @@ pub fn set_ai_key(app: AppHandle, state: State<'_, AppState>, id: String, key: S
 /// while.
 #[tauri::command]
 pub async fn test_ai(connection: crate::settings::AiConnection, key: Option<String>) -> Result<()> {
-    tauri::async_runtime::spawn_blocking(move || enrich::test_connection(&connection, key.as_deref()))
+    tauri::async_runtime::spawn_blocking(move || {
+        let _purpose = crate::usage::purpose(crate::usage::Purpose::Check);
+        enrich::test_connection(&connection, key.as_deref())
+    })
         .await
         .map_err(|e| Error::Invalid(e.to_string()))?
 }
@@ -494,15 +497,23 @@ fn timed<T>(what: &str, save: impl FnOnce() -> Result<T>) -> Result<T> {
 
 // --- Ask --------------------------------------------------------------------------------
 
-/// Starts a question about the library (or about one topic or note). Returns it at once; the
+/// Starts a question about the library (or about one topic or note); `thread` is the
+/// conversation it follows on from. Returns it at once; the
 /// answer arrives as `ask-done` once the agent has worked through it.
 #[tauri::command]
-pub fn ask_start(app: AppHandle, state: State<'_, AppState>, question: String, scope: Option<String>) -> Result<crate::db::asks::Ask> {
+pub fn ask_start(app: AppHandle, state: State<'_, AppState>, question: String, scope: Option<String>, thread: Option<String>) -> Result<crate::db::asks::Ask> {
     let ai = state.settings.get().ai;
     // Fails early, with a plain message, when there is no connection to ask through.
     enrich::config_for(&ai).map_err(|_| Error::Invalid("Connect an AI in Settings to get written answers.".into()))?;
     let finder = crate::ask::tools::AppFinder(&state);
-    let id = state.asker.begin(&state.db, &finder, &question, scope.as_deref(), ai.ask_per_day)?;
+    let start = crate::ask::session::Start {
+        question: &question,
+        scope: scope.as_deref(),
+        thread: thread.as_deref(),
+        per_day: ai.ask_per_day,
+        budget: crate::ask::budget::Budget::for_profile(ai.ask_profile),
+    };
+    let id = state.asker.begin(&state.db, &finder, &start)?;
     crate::ask::spawn(&app, id.clone());
     state.db.with(|conn| crate::db::asks::get(conn, &id))?.ok_or_else(|| Error::Invalid("the question wasn't saved".into()))
 }
@@ -523,6 +534,14 @@ pub fn ask_resume(app: AppHandle, state: State<'_, AppState>, id: String) -> Res
     Ok(())
 }
 
+/// Lets a partial answer (one that ran out of steps) go on looking where it stopped.
+#[tauri::command]
+pub fn ask_continue(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<()> {
+    state.asker.extend(&id)?;
+    crate::ask::spawn(&app, id);
+    Ok(())
+}
+
 /// Past questions with their answers, newest first.
 #[tauri::command]
 pub fn ask_history(state: State<'_, AppState>) -> Result<Vec<crate::db::asks::Ask>> {
@@ -534,4 +553,24 @@ pub fn ask_delete(state: State<'_, AppState>, id: String) -> Result<()> {
     state.asker.stop(&id);
     state.asker.forget(&id);
     state.db.with(|conn| crate::db::asks::delete(conn, &id))
+}
+
+/// Tries a model on a small made-up question and says whether it can drive Ask, and whether it
+/// calls tools or has to be asked for JSON. Like `test_ai`, for a connection before or after it is
+/// saved.
+#[tauri::command]
+pub async fn ask_check(connection: crate::settings::AiConnection, key: Option<String>) -> Result<crate::ask::check::AskCheck> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _purpose = crate::usage::purpose(crate::usage::Purpose::Check);
+        let config = enrich::connection_config(&connection, key.as_deref())?;
+        Ok(crate::ask::check::check(&config))
+    })
+    .await
+    .map_err(|e| Error::Invalid(e.to_string()))?
+}
+
+/// What the AI has been used for: today, the last week, and by purpose. For the usage page.
+#[tauri::command]
+pub fn ai_usage(state: State<'_, AppState>) -> Result<crate::usage::Report> {
+    state.db.with(|conn| crate::usage::report(conn))
 }

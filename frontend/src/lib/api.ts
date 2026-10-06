@@ -5,6 +5,7 @@ import type {
   AiConnection,
   Ask,
   AiKeyStatus,
+  AskCheck,
   CaptureResult,
   Deleted,
   EnrichStatus,
@@ -18,6 +19,7 @@ import type {
   Preview,
   Settings,
   TopicsData,
+  UsageReport,
 } from './types'
 import * as mock from './mock/backend'
 
@@ -67,17 +69,24 @@ export const resetTopicName = (id: string) => call<void>('reset_topic_name', { i
 export const regroupTopics = () => call<void>('regroup_topics')
 /** How the slow pass over older notes is going. */
 export const olderStatus = () => call<OlderProgress>('older_status')
-/** Starts a question about the library, or about one topic or note (`scope`). It comes back at
+/** Starts a question about the library, or about one topic or note (`scope`); `thread` is the
+ * conversation it follows on from. It comes back at
  * once; listen for `ask-step` while the agent works, then `ask-done` or `ask-failed`. Rejects when
  * no AI is connected or the day's limit is used up. */
-export const askStart = (question: string, scope?: string) => call<Ask>('ask_start', { question, scope })
+export const askStart = (question: string, scope?: string, thread?: string) => call<Ask>('ask_start', { question, scope, thread })
 /** Ends a running question with what it has found so far. */
 export const askStop = (id: string) => call<void>('ask_stop', { id })
 /** Goes on with a question a provider error stopped. */
 export const askResume = (id: string) => call<void>('ask_resume', { id })
+/** Lets a partial answer (one that ran out of steps) go on looking where it stopped. */
+export const askContinue = (id: string) => call<void>('ask_continue', { id })
 /** Past questions with their answers, newest first. */
 export const askHistory = () => call<Ask[]>('ask_history')
 export const askDelete = (id: string) => call<void>('ask_delete', { id })
+/** Tries a model on a small made-up question: can it drive Ask, and does it call tools? */
+export const askCheck = (connection: AiConnection, key?: string) => call<AskCheck>('ask_check', { connection, key })
+/** What the AI has been used for: today, the last week, and by purpose. */
+export const aiUsage = () => call<UsageReport>('ai_usage')
 export const hotkeyStatus = () => call<HotkeyStatus>('hotkey_status')
 export const configureHotkey = () => call<void>('configure_hotkey')
 

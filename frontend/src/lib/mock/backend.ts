@@ -1,7 +1,7 @@
 // In-memory stand-in for the Rust backend, used by `npm run dev:ui`. Detection here is a rough
 // approximation, good enough to exercise the UI; the real rules live in Rust.
 
-import type { Ask, AskFailed, AskStep, AiConnection, AiKeyStatus, ModelInfo, CaptureResult, Concept, ConceptItems, Deleted, Edge, EnrichStatus, HotkeyStatus, Item, ItemDetail, ItemLinked, ItemTopic, Kind, MapData, OlderProgress, Position, Preview, Settings, Tier, Topic, TopicsData } from '../types'
+import type { UsageReport, Ask, AskCheck, AskFailed, AskStep, AiConnection, AiKeyStatus, ModelInfo, CaptureResult, Concept, ConceptItems, Deleted, Edge, EnrichStatus, HotkeyStatus, Item, ItemDetail, ItemLinked, ItemTopic, Kind, MapData, OlderProgress, Position, Preview, Settings, Tier, Topic, TopicsData } from '../types'
 import { sampleConcepts, sampleItems } from './samples'
 
 let settings: Settings = {
@@ -11,11 +11,19 @@ let settings: Settings = {
   startAtLogin: true,
   fetchLinks: true,
   watchClipboard: false,
-  ai: { enabled: false, connections: [], active: '', dailyLimit: 500, askPerDay: 20, improveOld: false, improvePerDay: 10 },
+  ai: { enabled: false, connections: [], active: '', dailyLimit: 500, askPerDay: 20, askProfile: 'standard', improveOld: false, improvePerDay: 10 },
 }
 
 // The keychain, the AI queue and what the AI said (concepts and typed links), simulated.
 const keys = new Map<string, string>()
+
+// `/?ai` starts with a provider already connected, to try Ask without the Settings dance.
+if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('ai')) {
+  settings.ai.enabled = true
+  settings.ai.connections = [{ id: 'mock', name: 'Mock AI', preset: 'openai', kind: 'openai', baseUrl: 'https://mock.invalid/v1', model: 'mock', vision: false }]
+  settings.ai.active = 'mock'
+  keys.set('mock', 'test')
+}
 const isLocal = (preset: string) => /ollama|lmstudio/.test(preset)
 const connectionOf = (id: string) => settings.ai.connections.find((c) => c.id === id)
 /** The connection in use can make calls: it has a key, or it's a local server. */
@@ -421,14 +429,19 @@ const commands: Record<string, Command> = {
   regroup_topics: () => emit('topics-changed', topicsData),
   ask_start: (args): Ask => {
     if (!settings.ai.connections.length) throw new Error('Connect an AI in Settings to get written answers.')
+    const id = `ask${asks.length + 1}-${Date.now()}`
+    const follows = args.thread ? asks.find((a) => a.threadId === args.thread || a.id === args.thread) : undefined
+    if (args.thread && !follows) throw new Error('That conversation is gone; start a new question.')
     const ask: Ask = {
-      id: `ask${asks.length + 1}-${Date.now()}`,
+      id,
+      threadId: follows?.threadId ?? id,
       scope: args.scope ? String(args.scope) : null,
       question: String(args.question).trim(),
       answer: '',
       effort: 'explain',
       state: 'running',
       unsupported: false,
+      limitHit: null,
       createdAt: new Date().toISOString(),
       sources: [],
     }
@@ -437,6 +450,39 @@ const commands: Record<string, Command> = {
     stopped.delete(ask.id)
     void playAsk(ask)
     return { ...ask }
+  },
+  ask_check: async (args): Promise<AskCheck> => {
+    await new Promise((done) => setTimeout(done, 1200))
+    const c = args.connection as AiConnection
+    if (!String(args.key ?? '').trim() && !keys.has(c.id) && !isLocal(c.preset)) throw new Error("the provider didn't accept the key: no key set")
+    // Local servers often can't call tools; the others can.
+    return isLocal(c.preset)
+      ? { ok: true, protocol: 'json', message: "Works, using simpler JSON steps (this model can't call tools). Answers may be a little less reliable." }
+      : { ok: true, protocol: 'tools', message: 'Works: this model calls tools and cited the right note.' }
+  },
+  ask_continue: () => {
+    throw new Error("That question can't be continued any more; ask it again.")
+  },
+  ai_usage: (): UsageReport => {
+    const day = (back: number) => new Date(Date.now() - back * 86_400_000).toISOString().slice(0, 10)
+    const asked = asks.length
+    const notes = settings.ai.enabled ? 38 + olderDone : 0
+    const today = (calls: number, failed = 0, limited = 0) => ({ calls, failed, limited, tokensIn: calls * 900, tokensOut: calls * 140 })
+    const byPurpose = [
+      { purpose: 'notes', ...today(notes, 1) },
+      { purpose: 'ask', ...today(asked * 4, 0, asked > 2 ? 2 : 0) },
+      { purpose: 'topics', ...today(settings.ai.enabled ? 6 : 0) },
+    ].filter((p) => p.calls > 0)
+    const calls = byPurpose.reduce((n, p) => n + p.calls, 0)
+    const counted = byPurpose.filter((p) => p.purpose !== 'ask').reduce((n, p) => n + p.calls, 0)
+    const earlier = [12, 140, 0, 64, 31, 88]
+    return {
+      today: { calls, failed: byPurpose.reduce((n, p) => n + p.failed, 0), limited: byPurpose.reduce((n, p) => n + p.limited, 0), tokensIn: calls * 900, tokensOut: calls * 140 },
+      days: [...earlier.map((c, i) => ({ day: day(6 - i), calls: c, tokens: c * 1040 })), { day: day(0), calls, tokens: calls * 1040 }],
+      byPurpose,
+      countedToday: counted,
+      asksToday: asked,
+    }
   },
   ask_stop: (args) => void stopped.add(String(args.id)),
   ask_resume: () => {
@@ -470,6 +516,10 @@ async function playAsk(ask: Ask) {
     .filter((s) => s.score > 0)
     .sort((a, b) => b.score - a.score)
     .map((s) => s.item)
+  // A follow-up that names nothing new goes on with the note the conversation cited.
+  const before = asks.find((a) => a.threadId === ask.threadId && a.id !== ask.id && a.sources.length)
+  const earlierNote = before ? items.find((i) => i.id === before.sources[0].itemId) : undefined
+  if (!scored.length && earlierNote) scored.push(earlierNote)
   const step = (n: number, tool: AskStep['tool'], label: string, ids: string[]) =>
     emit('ask-step', { askId: ask.id, n, tool, label, items: ids } satisfies AskStep)
   const finish = (patch: Partial<Ask>) => {
@@ -492,7 +542,8 @@ async function playAsk(ask: Ask) {
   finish({
     state: 'done',
     effort: 'lookup',
-    answer: `${sentence} [1]`,
+    answer: `**${scored[0].title}**: ${sentence} [1]\n\n- Read in your notes: ${scored[0].title} [1]`,
+    limitHit: 'steps',
     sources: [{ n: 1, itemId: scored[0].id, quote: sentence.slice(0, 60) }],
   })
 }

@@ -263,7 +263,7 @@ fn handle_error(app: &AppHandle, state: &AppState, id: &str, outcome: Result<()>
         }
         Error::DailyLimit => {
             let until = Instant::now() + Duration::from_secs(seconds_to_midnight());
-            state.enricher.pause("Reached today's AI limit. It continues tomorrow, or raise the limit in Settings.".into(), Some(until));
+            state.enricher.pause("Reached today's AI limit. It continues tomorrow, or raise the limit in Settings → Usage.".into(), Some(until));
             Some(Lane::Backfill)
         }
         // This item's answer was unusable; the others may be fine.
@@ -298,8 +298,10 @@ fn process(app: &AppHandle, state: &AppState, id: &str) -> Result<()> {
         return Ok(());
     }
     if let Some(topic_id) = id.strip_prefix(crate::topics::ai::JOB_PREFIX) {
+        let _purpose = crate::usage::purpose(crate::usage::Purpose::Topics);
         return crate::topics::ai::name(app, state, topic_id);
     }
+    let _purpose = crate::usage::purpose(crate::usage::Purpose::Notes);
     let Some(item) = state.db.with(|conn| items::get(conn, id))? else { return Ok(()) };
     // Waiting to be linked: it comes back here once it is.
     if item.status == Status::Pending || item.status == Status::Failed {
@@ -338,7 +340,7 @@ fn process(app: &AppHandle, state: &AppState, id: &str) -> Result<()> {
 
     let context = context::build(&state.db, &state.pipeline.embedder, &item, &text)?;
     let schema = context::schema();
-    let request = Request { system: context::SYSTEM, user: &context.user, images: &[], schema: &schema, max_tokens: MAX_ANSWER_TOKENS };
+    let request = Request { system: context::SYSTEM, user: &context.user, images: &[], schema: &schema, max_tokens: MAX_ANSWER_TOKENS, tools: &[] };
     let reply = call(state, &ai, &config, &request)?;
     let answer: Answer = serde_json::from_value(reply).map_err(|e| LlmError::Bad(format!("the answer didn't fit: {e}")))?;
 
@@ -373,6 +375,7 @@ fn eligible(state: &AppState, item: &Item) -> Result<bool> {
 /// case it is treated like any other item.
 fn describe_image(app: &AppHandle, state: &AppState, config: &Config, ai: &AiSettings, item: &Item) -> Result<bool> {
     spend(state, ai)?;
+    let _purpose = crate::usage::purpose(crate::usage::Purpose::Images);
     let Some(description) = vision::describe(config, &state.library, item)? else { return Ok(false) };
     let updated = vision::write_description(&state.library, &state.db, item, &description)?;
     let _ = app.emit("item-updated", &updated);

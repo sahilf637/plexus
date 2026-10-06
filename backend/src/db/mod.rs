@@ -184,6 +184,27 @@ const MIGRATIONS: &[&str] = &[r#"
 "#, r#"
     -- The answer listed sources but none could be found in the notes it named.
     ALTER TABLE asks ADD COLUMN unsupported INTEGER NOT NULL DEFAULT 0;
+"#, r#"
+    -- A follow-up joins the thread of the question it follows; a first question starts its own.
+    ALTER TABLE asks ADD COLUMN thread_id TEXT;
+    UPDATE asks SET thread_id = id;
+    CREATE INDEX asks_thread ON asks(thread_id);
+    -- What the agent found along the way (a JSON list of short lines), carried into follow-ups.
+    ALTER TABLE asks ADD COLUMN found TEXT NOT NULL DEFAULT '[]';
+"#, r#"
+    -- For a partial answer: what ran out ('steps' or 'tokens').
+    ALTER TABLE asks ADD COLUMN limit_hit TEXT;
+    -- What AI calls were made, by day and purpose, for the usage page in Settings.
+    CREATE TABLE ai_usage (
+        day        TEXT NOT NULL,
+        purpose    TEXT NOT NULL,
+        calls      INTEGER NOT NULL DEFAULT 0,
+        failed     INTEGER NOT NULL DEFAULT 0,
+        limited    INTEGER NOT NULL DEFAULT 0,
+        tokens_in  INTEGER NOT NULL DEFAULT 0,
+        tokens_out INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (day, purpose)
+    );
 "#];
 
 pub struct Db {

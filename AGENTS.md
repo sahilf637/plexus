@@ -17,7 +17,7 @@ is fully automatic; the only thing a user removes is an AI link or an AI title (
 change). M3 adds topics: a tree of groups built locally from the links, named locally (better with
 AI), shown on the map as regions that change with the zoom, kept stable as the library grows, plus
 an optional slow pass that improves older notes. M4 adds Ask: a read-only agent that answers a
-question from the notes with five small tools, checked citations and its path shown on the map.
+question from the notes with six small tools, checked citations and its path shown on the map.
 Next: M5 (scale, imports, MCP).
 
 ## Principles
@@ -93,12 +93,15 @@ backend/               Tauri v2 crate `plexus`
   src/db/              SQLite index: migrations, items, edges, search
   src/capture/         kind detection, secrets, dedupe, hotkeys, clipboard
   src/pipeline/        background worker: chunk, embed, link, plain-language link reasons
-  src/llm/             AI providers (OpenAI-compatible, Anthropic, Gemini), one blocking JSON call; keychain keys
+  src/llm/             AI providers (OpenAI-compatible, Anthropic, Gemini), one blocking call that returns JSON
+                       (structured output, or a native tool call for Ask, falling back to JSON); keychain keys
   src/enrich/          T2 queue and worker: bounded context, applying the answer, image descriptions,
                        the slow pass over older notes (`older.rs`)
   src/topics/          topic tree: graph, clustering (Louvain), matching, names (local and AI)
+  src/usage.rs         counts every AI call by day and purpose (and tokens) for the usage page in Settings
   src/ask/             the Ask agent: loop and budgets (`mod.rs`), prompt and step schema, the five tools
-                       (`tools.rs`), citation checking (`cite.rs`), running and resuming questions (`session.rs`)
+                       (`tools.rs`), citation checking (`cite.rs`), running and resuming questions (`session.rs`),
+                       conversations (`thread.rs`), sizes (`budget.rs`), the "Check Ask" test (`check.rs`)
   src/fetch/           URL fetching + article extraction
   src/extract/         text out of files and images (text, HTML, PDF, DOCX, EPUB, OCR) in the background
 docs/                  product and design docs; plans/ per milestone

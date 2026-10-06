@@ -211,7 +211,8 @@ A Claude-Code-style loop over the knowledge base rather than single-shot RAG.
 |---|---|
 | `search(query, mode, scope)` | Hybrid / semantic / keyword / exact (literal or regex), in the whole library or one topic |
 | `read(item, offset, limit)` | Paged reading of an item |
-| `neighbors(item, depth)` | Walk the graph, with each link's reason |
+| `neighbors(item, depth, limit)` | Walk the graph, with each link's reason; says how many links it left out |
+| `path(item, to)` | How two notes connect: the chain of links between them (weak links included), with reasons |
 | `topics(topic?)` | Browse the hierarchy: top level, or one topic's summary, sub-topics and members |
 | `answer(text, sources, effort)` | Ends the run |
 
@@ -232,7 +233,7 @@ How a question runs (details in [plans/M4.md](plans/M4.md)):
   whose sources all fail is marked unsupported, while one that cites nothing because the notes
   don't cover the question is not.
 - **Errors.** A bad step is retried once; a provider error keeps the run so it can be resumed;
-  stopping keeps what was found. Asks have their own daily limit (Settings → AI).
+  stopping keeps what was found. Asks have their own daily limit (Settings → Usage).
 - **On the map** the agent's path shows only while the Ask panel is showing and the window is in
   front, and it steps aside whenever you use the map: faint rings on the notes it was shown, a
   line through the ones it read, a pulse on the latest step, and a ring on each cited note. A
@@ -276,7 +277,7 @@ How a question runs (details in [plans/M4.md](plans/M4.md)):
 | **M1** | Curate and extract. Delete items (trash with undo); plain-language link reasons and clearer strength; hand-made links. Extractors: plain-text files (`.md`, `.txt`, code files) read as text, rich HTML → markdown, images (local PaddleOCR PP-OCRv6 small, ~30 MB, swappable for a provider's vision later), PDF/DOCX/EPUB text; clipboard watching (opt-in). Until an item has text it links by name only, capped at `maybe`. No accept/reject flow. See [plans/M1.md](plans/M1.md). |
 | **M2** | LLM enrichment of new items: titles (marked AI, revertible), summaries, concepts, typed edges with reasons, image descriptions. OpenAI-compatible, Anthropic and Gemini providers; keys in the system keychain. See [plans/M2.md](plans/M2.md). |
 | **M3** | Topics: a variable-depth tree built locally by graph clustering, named locally (better with AI), shown as regions that appear with zoom, kept stable as the library grows; plus the slow, capped "improve older notes" pass. See [plans/M3.md](plans/M3.md). |
-| **M4** | Ask: an agent with five small tools, checked citations (the quote must really be in the note), effort-sized answers and its path shown live on the map. See [plans/M4.md](plans/M4.md). |
+| **M4** | Ask: an agent with six small tools, checked citations (the quote must really be in the note), effort-sized answers and its path shown live on the map. See [plans/M4.md](plans/M4.md). |
 | **M5** | Scale: viewport slicing, incremental layout; imports (Obsidian, Notion, bookmarks); MCP server. |
 
 ## Open decisions

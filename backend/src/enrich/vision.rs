@@ -59,6 +59,7 @@ pub fn describe(config: &Config, library: &Library, item: &Item) -> Result<Optio
         images: std::slice::from_ref(&image),
         schema: &schema,
         max_tokens: 400,
+        tools: &[],
     };
     let answer = llm::complete_json(config, &request)?;
     let description = answer["description"].as_str().unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ");

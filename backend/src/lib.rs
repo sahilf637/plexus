@@ -13,6 +13,7 @@ mod settings;
 mod state;
 mod topics;
 mod tray;
+mod usage;
 mod windows;
 
 use std::sync::mpsc::Receiver;
@@ -68,6 +69,14 @@ pub fn run() {
             let (fetcher, fetch_queue) = Fetcher::new();
             let (extractor, extract_queue) = Extractor::new(Ocr::new(find_models(app.handle(), ocr::MODEL_DIR, Ocr::find)));
             app.manage(AppState { settings, hotkey: Hotkey::default(), library, db, pipeline, fetcher, extractor, enricher: Default::default(), topics: Default::default(), asker: Default::default() });
+            // Every AI call is counted for the usage page in Settings.
+            let counted = app.handle().clone();
+            usage::install(Box::new(move |call| {
+                let state = counted.state::<AppState>();
+                if let Err(e) = state.db.with(|conn| usage::store(conn, call)) {
+                    tracing::warn!("couldn't record an AI call: {e}");
+                }
+            }));
             start_background_work(app.handle(), link_queue, fetch_queue, extract_queue);
             tray::create(app.handle())?;
             hotkey::register(app.handle());
@@ -125,8 +134,11 @@ pub fn run() {
             commands::ask_start,
             commands::ask_stop,
             commands::ask_resume,
+            commands::ask_continue,
             commands::ask_history,
             commands::ask_delete,
+            commands::ask_check,
+            commands::ai_usage,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Plexus");

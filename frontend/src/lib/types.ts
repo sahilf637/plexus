@@ -33,6 +33,8 @@ export interface AiSettings {
   dailyLimit: number
   /** Most questions asked of the library per day; 0 means no limit. */
   askPerDay: number
+  /** How much each question may spend: small for free plans, big for pay-per-use ones. */
+  askProfile: 'economy' | 'standard' | 'thorough'
   /** Slowly improve the notes saved before AI was switched on, a few a day. */
   improveOld: boolean
   /** Most older notes improved per day; 0 means only the daily limit applies. */
@@ -259,6 +261,8 @@ export interface AskSource {
 /** A question asked of the library, with its answer once there is one. */
 export interface Ask {
   id: string
+  /** The first question of the conversation this belongs to (its own id when it is the first). */
+  threadId: string
   /** A topic or item id the question was limited to. */
   scope: string | null
   question: string
@@ -267,6 +271,8 @@ export interface Ask {
   state: AskState
   /** It cited sources and none held up. */
   unsupported: boolean
+  /** For a partial answer: what ran out. */
+  limitHit: 'steps' | 'tokens' | null
   createdAt: string
   sources: AskSource[]
 }
@@ -285,4 +291,33 @@ export interface AskFailed {
   askId: string
   message: string
   canResume: boolean
+}
+
+/** The result of trying a model on a small made-up question (Settings → AI → Check Ask). */
+export interface AskCheck {
+  ok: boolean
+  /** `tools`: the model calls tools. `json`: it is asked for JSON steps instead. */
+  protocol: 'tools' | 'json'
+  message: string
+}
+
+/** What the AI has been used for, for the usage page (Settings → AI). */
+export interface UsageTotals {
+  calls: number
+  failed: number
+  limited: number
+  tokensIn: number
+  tokensOut: number
+}
+
+export interface UsageReport {
+  today: UsageTotals
+  /** The last seven days, oldest first. */
+  days: { day: string; calls: number; tokens: number }[]
+  /** Today, by what the calls were for (`notes`, `images`, `topics`, `ask`, `check`, `other`). */
+  byPurpose: ({ purpose: string } & UsageTotals)[]
+  /** Calls counted against the daily limit today. */
+  countedToday: number
+  /** Questions asked today. */
+  asksToday: number
 }

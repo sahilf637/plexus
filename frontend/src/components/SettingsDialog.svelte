@@ -10,15 +10,17 @@
     regroupTopics,
     setAiKey,
     setSettings,
+    aiUsage,
+    askCheck,
     testAi,
   } from '../lib/api'
   import { aiPresets } from '../lib/kinds'
   import { navigation, setNavigation } from '../lib/navigation.svelte'
   import Icon, { type IconName } from './Icon.svelte'
   import Select, { type Option } from './Select.svelte'
-  import type { AiConnection, AiKeyStatus, AiSettings, HotkeyStatus, ModelInfo, OlderProgress, Settings } from '../lib/types'
+  import type { AiConnection, AiKeyStatus, AiSettings, HotkeyStatus, ModelInfo, OlderProgress, Settings, UsageReport } from '../lib/types'
 
-  type Section = 'general' | 'capture' | 'ai' | 'library'
+  type Section = 'general' | 'capture' | 'ai' | 'usage' | 'library'
 
   let { onclose, section: first = 'general' }: { onclose: () => void; section?: Section } = $props()
 
@@ -26,6 +28,7 @@
     { id: 'general', label: 'General', icon: 'settings' },
     { id: 'capture', label: 'Capture', icon: 'clipboard' },
     { id: 'ai', label: 'AI', icon: 'sparkles' },
+    { id: 'usage', label: 'Usage', icon: 'chart' },
     { id: 'library', label: 'Library', icon: 'folder' },
   ]
   const OTHER = '__other__'
@@ -42,6 +45,57 @@
   let keyStatuses = $state<Record<string, AiKeyStatus>>({})
   /** The provider form is showing: to add one, or (with `editing`) to change one. */
   let adding = $state(false)
+  /** The model being tried on a made-up question for Ask, and what came of it. */
+  let askChecking = $state(false)
+  let askChecked = $state<{ ok: boolean; message: string } | null>(null)
+
+  /** What the AI has been used for; refreshed while the Usage page is showing. */
+  let usage = $state<UsageReport | null>(null)
+
+  async function loadUsage() {
+    try {
+      usage = await aiUsage()
+    } catch {}
+  }
+
+  $effect(() => {
+    if (section !== 'usage') return
+    void loadUsage()
+    const timer = setInterval(loadUsage, 5000)
+    return () => clearInterval(timer)
+  })
+
+  const PURPOSES: Record<string, string> = {
+    notes: 'Titles, summaries and links',
+    images: 'Describing pictures',
+    topics: 'Naming topics',
+    ask: 'Questions',
+    check: 'Checks',
+    other: 'Other',
+  }
+
+  /** 1,234 → 1.2k, 1,234,567 → 1.2M. */
+  const compact = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n))
+  /** How full a meter is, 0 to 1 (a limit of 0 means none). */
+  const filled = (used: number, limit: number) => (limit > 0 ? Math.min(1, used / limit) : 0)
+  const weekday = (day: string) => new Date(`${day}T12:00:00`).toLocaleDateString(undefined, { weekday: 'short' })
+  const busiest = $derived(Math.max(1, ...(usage?.days.map((d) => d.calls) ?? [1])))
+
+  async function checkAsk() {
+    const connection = settings?.ai.connections.find((c) => c.id === settings?.ai.active)
+    if (!connection) return
+    askChecking = true
+    askChecked = null
+    try {
+      const result = await askCheck(connection)
+      askChecked = { ok: result.ok, message: result.message }
+    } catch (e) {
+      askChecked = { ok: false, message: String(e) }
+    } finally {
+      askChecking = false
+      void loadUsage()
+    }
+  }
   /** The provider being changed; its kind, address and key slot stay as they were. */
   let editing = $state<AiConnection | null>(null)
   let removing = $state<string | null>(null)
@@ -389,6 +443,64 @@
                 <input type="checkbox" class="switch" checked={settings.watchClipboard} onchange={(e) => update({ watchClipboard: e.currentTarget.checked })} />
               </label>
             </div>
+          {:else if section === 'usage'}
+            {#if usage}
+              <h4>Today</h4>
+              <div class="group usage">
+                {#each [{ label: 'Notes', used: usage.countedToday, limit: settings.ai.dailyLimit, key: 'dailyLimit', unit: 'requests', hint: 'The most requests per day for titles, summaries, links, topic names and pictures. 0 means no limit.' }, { label: 'Questions', used: usage.asksToday, limit: settings.ai.askPerDay, key: 'askPerDay', unit: 'questions', hint: 'The most questions you can ask of your notes per day. 0 means no limit.' }] as m (m.key)}
+                  <div class="meter" title={m.hint}>
+                    <div class="meter-head">
+                      <span>{m.label}</span>
+                      <span class="figure">
+                        {m.used} of
+                        <input class="input limit" type="number" min="0" step={m.key === 'dailyLimit' ? 50 : 5} value={m.limit} aria-label={`${m.label} per day (0 for no limit)`} onchange={(e) => updateAi({ [m.key]: Math.max(0, Math.floor(Number(e.currentTarget.value) || 0)) })} />
+                        {m.unit}
+                      </span>
+                    </div>
+                    <div class="bar" class:warm={filled(m.used, m.limit) >= 0.8} class:full={filled(m.used, m.limit) >= 1}>
+                      <span style:width={`${filled(m.used, m.limit) * 100}%`}></span>
+                    </div>
+                    {#if m.limit > 0 && m.used >= m.limit}
+                      <p class="usage-note warn">Used up for today. It starts again tomorrow, or raise the limit.</p>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+
+              <h4>Last 7 days</h4>
+              <div class="group usage">
+                <div class="week" role="img" aria-label={`Requests over the last week: ${usage.days.map((d) => d.calls).join(', ')}`}>
+                  {#each usage.days as d, i (d.day)}
+                    <div class="col" title={`${weekday(d.day)}: ${d.calls} requests${d.tokens ? `, ${compact(d.tokens)} tokens` : ''}`}>
+                      <span class="count">{d.calls || ''}</span>
+                      <span class="column"><span class="fill" class:today={i === usage.days.length - 1} style:height={`${Math.max(d.calls ? 6 : 2, (d.calls / busiest) * 100)}%`}></span></span>
+                      <span class="day">{i === usage.days.length - 1 ? 'Today' : weekday(d.day)}</span>
+                    </div>
+                  {/each}
+                </div>
+              </div>
+
+              <h4>Requests today</h4>
+              <div class="group usage">
+                {#if usage.byPurpose.length}
+                  <ul class="purposes">
+                    {#each usage.byPurpose as p (p.purpose)}
+                      <li>
+                        <span class="what">{PURPOSES[p.purpose] ?? p.purpose}</span>
+                        <span class="how">
+                          {#if p.limited}<span class="flag warn" title="The provider asked to slow down">{p.limited} slowed</span>{/if}
+                          {#if p.failed}<span class="flag bad" title="Requests that failed">{p.failed} failed</span>{/if}
+                          {#if p.tokensIn + p.tokensOut}<span class="muted">{compact(p.tokensIn + p.tokensOut)} tokens</span>{/if}
+                        </span>
+                        <span class="n">{p.calls}</span>
+                      </li>
+                    {/each}
+                  </ul>
+                {:else}
+                  <p class="usage-note empty">Nothing yet today.</p>
+                {/if}
+              </div>
+            {/if}
           {:else if section === 'ai' && adding}
             <!-- Add a provider -->
             <div class="group">
@@ -455,93 +567,101 @@
               </button>
             </div>
           {:else if section === 'ai'}
-            <!-- The providers -->
-            <div class="group">
-              <label class="item">
-                <div class="label">
-                  <span>Use AI</span>
-                  <span class="desc">Titles, summaries and smarter links for new items. Optional.</span>
-                </div>
-                <input type="checkbox" class="switch" checked={settings.ai.enabled} onchange={(e) => toggleAi(e.currentTarget.checked)} />
-              </label>
-            </div>
-
-            {#if settings.ai.enabled}
-              <h4>Providers</h4>
-              <div class="group" role="radiogroup" aria-label="Provider in use">
-                {#each connections as c (c.id)}
-                  <div class="item">
-                    <button
-                      class="row"
-                      role="radio"
-                      aria-checked={settings.ai.active === c.id}
-                      onclick={() => updateAi({ active: c.id })}
-                      title={settings.ai.active === c.id ? 'In use' : 'Use this one'}
-                    >
-                      <span class="radio" class:on={settings.ai.active === c.id} aria-hidden="true"></span>
-                      <span class="label">
-                        <span>{c.name}</span>
-                        <span class="desc">
-                          {summary(c)}{#if needsKey(c)}{' · '}<span class="warn">needs a key</span>{/if}
-                        </span>
+            <h4>Providers</h4>
+            <div class="group" role="radiogroup" aria-label="Provider in use">
+              {#each connections as c (c.id)}
+                <div class="item">
+                  <button
+                    class="row"
+                    role="radio"
+                    aria-checked={settings.ai.active === c.id}
+                    onclick={() => updateAi({ active: c.id })}
+                    title={settings.ai.active === c.id ? 'In use' : 'Use this one'}
+                  >
+                    <span class="radio" class:on={settings.ai.active === c.id} aria-hidden="true"></span>
+                    <span class="label">
+                      <span>{c.name}</span>
+                      <span class="desc">
+                        {summary(c)}{#if needsKey(c)}{' · '}<span class="warn">needs a key</span>{/if}
                       </span>
+                    </span>
+                  </button>
+                  {#if removing === c.id}
+                    <button class="btn" onclick={() => (removing = null)}>Keep</button>
+                    <button class="btn danger" onclick={() => remove(c.id)}>Remove</button>
+                  {:else}
+                    {#if settings.ai.active === c.id}<span class="tag">In use</span>{/if}
+                    <button class="icon-btn" onclick={() => startEditing(c)} title="Edit" aria-label={`Edit ${c.name}`}>
+                      <Icon name="edit" size={15} />
                     </button>
-                    {#if removing === c.id}
-                      <button class="btn" onclick={() => (removing = null)}>Keep</button>
-                      <button class="btn danger" onclick={() => remove(c.id)}>Remove</button>
-                    {:else}
-                      {#if settings.ai.active === c.id}<span class="tag">In use</span>{/if}
-                      <button class="icon-btn" onclick={() => startEditing(c)} title="Edit" aria-label={`Edit ${c.name}`}>
-                        <Icon name="edit" size={15} />
-                      </button>
-                      <button class="icon-btn danger" onclick={() => (removing = c.id)} title="Remove (also deletes its key)" aria-label={`Remove ${c.name}`}>
-                        <Icon name="trash" size={15} />
-                      </button>
-                    {/if}
+                    <button class="icon-btn danger" onclick={() => (removing = c.id)} title="Remove (also deletes its key)" aria-label={`Remove ${c.name}`}>
+                      <Icon name="trash" size={15} />
+                    </button>
+                  {/if}
+                </div>
+              {:else}
+                <div class="item">
+                  <div class="label">
+                    <span>No providers yet</span>
+                    <span class="desc">Add one to ask questions and to get titles, summaries and smarter links</span>
                   </div>
-                {:else}
-                  <div class="item">
-                    <div class="label">
-                      <span>No providers yet</span>
-                      <span class="desc">Add one to start using AI</span>
-                    </div>
-                  </div>
-                {/each}
-              </div>
-              <div class="actions start">
-                <button class="btn" onclick={startAdding}><Icon name="plus" size={15} />Add provider</button>
-              </div>
+                </div>
+              {/each}
+            </div>
+            <div class="actions start">
+              <button class="btn" onclick={startAdding}><Icon name="plus" size={15} />Add provider</button>
+            </div>
+            <p class="note">Tip: use a key with a spend limit, and only the permissions Plexus needs.</p>
 
-              <h4>Options</h4>
+            {#if connections.length}
+              <h4>Questions</h4>
               <div class="group">
-                <div class="item" title="The most AI requests per day, to keep costs predictable. 0 means no limit.">
-                  <div class="label"><span>Daily limit</span></div>
-                  <input class="input num" type="number" min="0" step="50" value={settings.ai.dailyLimit} aria-label="Daily limit" onchange={(e) => updateAi({ dailyLimit: Math.max(0, Math.floor(Number(e.currentTarget.value) || 0)) })} />
+                <div class="item" title="How much each question may spend. Economy keeps requests small, for free plans with low limits; Thorough reads more and remembers more of a conversation, for pay-per-use plans.">
+                  <div class="label">
+                    <span>Question size</span>
+                    <span class="desc">{settings.ai.askProfile === 'economy' ? 'Small requests, for free plans' : settings.ai.askProfile === 'thorough' ? 'Reads more, remembers more of a conversation' : 'A balance of both'}</span>
+                  </div>
+                  <div class="segmented" role="radiogroup" aria-label="Question size">
+                    {#each [['economy', 'Economy'], ['standard', 'Standard'], ['thorough', 'Thorough']] as [value, label]}
+                      <button role="radio" aria-checked={settings.ai.askProfile === value} class:on={settings.ai.askProfile === value} onclick={() => updateAi({ askProfile: value as 'economy' | 'standard' | 'thorough' })}>{label}</button>
+                    {/each}
+                  </div>
                 </div>
-                <div class="item" title="The most questions you can ask of your notes per day (each takes a few AI requests). 0 means no limit.">
-                  <div class="label"><span>Questions per day</span></div>
-                  <input class="input num" type="number" min="0" step="5" value={settings.ai.askPerDay} aria-label="Questions per day" onchange={(e) => updateAi({ askPerDay: Math.max(0, Math.floor(Number(e.currentTarget.value) || 0)) })} />
+                <div class="item" title="Tries the model in use on a small made-up question, to see whether it can drive Ask.">
+                  <div class="label">
+                    <span>Check this model</span>
+                    <span class="desc" class:bad={askChecked && !askChecked.ok}>{askChecking ? 'Trying a small question…' : (askChecked?.message ?? 'Finds out early whether the model can answer from your notes')}</span>
+                  </div>
+                  <button class="btn" onclick={checkAsk} disabled={askChecking || !settings.ai.connections.length}>{askChecking ? 'Checking…' : 'Check'}</button>
                 </div>
               </div>
-              <p class="note">Tip: use a key with a spend limit, and only the permissions Plexus needs.</p>
 
-              <h4>Older notes</h4>
+              <h4>Notes</h4>
               <div class="group">
                 <label class="item">
                   <div class="label">
-                    <span>Improve older notes</span>
-                    <span class="desc">Slowly add titles, summaries and links to notes saved before AI was on</span>
+                    <span>Improve new notes</span>
+                    <span class="desc">Titles, summaries and smarter links for what you save</span>
                   </div>
-                  <input type="checkbox" class="switch" checked={settings.ai.improveOld} onchange={(e) => updateAi({ improveOld: e.currentTarget.checked })} />
+                  <input type="checkbox" class="switch" checked={settings.ai.enabled} onchange={(e) => toggleAi(e.currentTarget.checked)} />
                 </label>
-                {#if settings.ai.improveOld}
-                  <div class="item" title="The most older notes improved per day, so it never uses up your AI limit. 0 means only the daily limit applies.">
+                {#if settings.ai.enabled}
+                  <label class="item">
                     <div class="label">
-                      <span>Notes per day</span>
-                      {#if olderLine}<span class="desc">{olderLine}</span>{/if}
+                      <span>Improve older notes</span>
+                      <span class="desc">Slowly add titles, summaries and links to notes saved before AI was on</span>
                     </div>
-                    <input class="input num" type="number" min="0" max="1000" step="5" value={settings.ai.improvePerDay} aria-label="Older notes per day" onchange={(e) => updateAi({ improvePerDay: Math.max(0, Math.floor(Number(e.currentTarget.value) || 0)) })} />
-                  </div>
+                    <input type="checkbox" class="switch" checked={settings.ai.improveOld} onchange={(e) => updateAi({ improveOld: e.currentTarget.checked })} />
+                  </label>
+                  {#if settings.ai.improveOld}
+                    <div class="item" title="The most older notes improved per day, so it never uses up your daily limit. 0 means only the daily limit applies.">
+                      <div class="label">
+                        <span>Older notes per day</span>
+                        {#if olderLine}<span class="desc">{olderLine}</span>{/if}
+                      </div>
+                      <input class="input num" type="number" min="0" max="1000" step="5" value={settings.ai.improvePerDay} aria-label="Older notes per day" onchange={(e) => updateAi({ improvePerDay: Math.max(0, Math.floor(Number(e.currentTarget.value) || 0)) })} />
+                    </div>
+                  {/if}
                 {/if}
               </div>
             {/if}
@@ -812,6 +932,168 @@
     margin: 12px 2px 0;
     color: var(--danger);
     overflow-wrap: anywhere;
+  }
+
+  .desc.bad {
+    color: var(--warning);
+  }
+
+  /* Usage: two meters, a week of bars, and what the calls were for. */
+  .usage {
+    padding: 4px 0 10px;
+  }
+
+  .meter {
+    padding: 10px 14px 4px;
+  }
+
+  .meter-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 6px;
+  }
+
+  .figure {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .input.limit {
+    width: 64px;
+    height: 24px;
+    padding: 0 6px;
+    text-align: right;
+    font-size: 12px;
+  }
+
+  .usage-note.empty {
+    margin: 8px 14px;
+  }
+
+  .bar {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--fill-hover);
+    overflow: hidden;
+  }
+
+  .bar > span {
+    display: block;
+    height: 100%;
+    border-radius: 3px;
+    background: var(--accent);
+    transition: width 300ms;
+  }
+
+  .bar.warm > span {
+    background: var(--warning);
+  }
+
+  .bar.full > span {
+    background: var(--danger);
+  }
+
+  .usage-note {
+    margin: 8px 14px 0;
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+
+  .usage-note.warn,
+  .warn {
+    color: var(--warning);
+  }
+
+  .week {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 8px;
+    margin: 14px 14px 4px;
+    height: 96px;
+  }
+
+  .col {
+    display: grid;
+    grid-template-rows: 14px 1fr 14px;
+    justify-items: center;
+    min-width: 0;
+  }
+
+  .col .count,
+  .col .day {
+    color: var(--text-muted);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .col .column {
+    width: 100%;
+    max-width: 28px;
+    display: flex;
+    align-items: flex-end;
+  }
+
+  .col .fill {
+    width: 100%;
+    border-radius: 4px 4px 2px 2px;
+    background: color-mix(in srgb, var(--accent) 40%, transparent);
+  }
+
+  .col .fill.today {
+    background: var(--accent);
+  }
+
+  .purposes {
+    list-style: none;
+    margin: 0;
+    padding: 10px 14px;
+  }
+
+  .purposes li {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 3px 0;
+  }
+
+  .purposes .what {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .purposes .how {
+    display: flex;
+    gap: 8px;
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+
+  .purposes .n {
+    min-width: 28px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .flag {
+    padding: 0 7px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 500;
+  }
+
+  .flag.warn {
+    background: var(--warning-soft);
+  }
+
+  .flag.bad {
+    background: color-mix(in srgb, var(--danger) 14%, transparent);
+    color: var(--danger);
   }
 
   .note {

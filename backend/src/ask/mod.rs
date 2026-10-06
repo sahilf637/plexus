@@ -3,14 +3,18 @@
 //! and goes round again within a budget of steps and tokens. It only reads: no step changes a
 //! note, a link or a topic. See docs/plans/M4.md.
 
+pub mod budget;
+pub mod check;
 pub mod cite;
 pub mod prompt;
 pub mod session;
+pub mod thread;
 pub mod tools;
 #[cfg(test)]
 mod tune;
 
 use std::collections::HashSet;
+use std::time::Duration;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
@@ -20,15 +24,18 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::db::asks::State;
 use crate::state::AppState;
 use crate::error::{Error, Result};
-use crate::llm::{self, Config, LlmError, Request};
+use crate::llm::{self, Config, LlmError, Request, ToolDef};
+use budget::Budget;
 use prompt::{Call, Cited, Effort, Step};
+
+/// How many times, and for how long at most, a run waits out a provider's rate limit before it
+/// gives up (the run can still be resumed).
+const RATE_RETRIES: usize = 3;
+const RATE_WAIT_MAX: Duration = Duration::from_secs(30);
+const RATE_WAIT_DEFAULT: Duration = Duration::from_secs(8);
 
 /// How many "found so far" lines the model is shown (the oldest go first).
 const FOUND_LINES: usize = 30;
-/// Roughly how many tokens of prompt a whole run may use, by effort (4 characters to a token).
-const LOOKUP_TOKENS: usize = 8_000;
-const EXPLAIN_TOKENS: usize = 30_000;
-const SURVEY_TOKENS: usize = 60_000;
 
 /// Where the model's replies come from (the provider; a script in tests).
 pub trait Model {
@@ -50,6 +57,8 @@ pub struct ToolOutput {
     pub shown: Vec<String>,
     /// Items whose text was actually read.
     pub read: Vec<String>,
+    /// What to call this step in the panel, if better than the generic one (it knows the titles).
+    pub label: Option<String>,
 }
 
 pub trait Tools {
@@ -69,6 +78,10 @@ pub struct Outcome {
     pub sources: Vec<Cited>,
     pub effort: Effort,
     pub state: State,
+    /// The one-line notes the agent made on the way, for follow-ups.
+    pub found: Vec<String>,
+    /// For a partial answer, what ran out: `steps` or `tokens`.
+    pub limit_hit: Option<&'static str>,
 }
 
 /// One question being answered. It keeps its progress, so a run stopped by a provider error can
@@ -76,6 +89,9 @@ pub struct Outcome {
 pub struct Run {
     question: String,
     scope: Option<String>,
+    budget: Budget,
+    /// The conversation so far, when this is a follow-up (see `thread`).
+    thread: String,
     /// Cards for the notes local search found before the first call, ready to put in the prompt.
     candidates: String,
     effort: Option<Effort>,
@@ -87,13 +103,22 @@ pub struct Run {
     last: Option<(String, String)>,
     pub shown: HashSet<String>,
     pub read: HashSet<String>,
+    /// How many replies had to be sent back as unusable.
+    pub refusals: usize,
+    /// Steps and prompt tokens granted on top of the budget by `extend` ("keep looking").
+    extra_steps: usize,
+    extra_tokens: usize,
+    /// Which limit ended the last stretch: `steps` or `tokens`.
+    limit_hit: Option<&'static str>,
 }
 
 impl Run {
-    pub fn new(question: &str, scope: Option<&str>, candidates: String, shown: Vec<String>) -> Self {
+    pub fn new(question: &str, scope: Option<&str>, candidates: String, shown: Vec<String>, thread: String, budget: Budget) -> Self {
         Self {
             question: question.trim().to_string(),
             scope: scope.map(str::to_string),
+            budget,
+            thread,
             candidates,
             effort: None,
             calls: 0,
@@ -102,6 +127,10 @@ impl Run {
             last: None,
             shown: shown.into_iter().collect(),
             read: HashSet::new(),
+            refusals: 0,
+            extra_steps: 0,
+            extra_tokens: 0,
+            limit_hit: None,
         }
     }
 
@@ -113,15 +142,21 @@ impl Run {
     /// provider leaves the run as it was, so calling this again goes on.
     pub fn advance(&mut self, model: &dyn Model, tools: &mut dyn Tools, cancel: &AtomicBool, on_event: &mut dyn FnMut(&Event)) -> Result<Outcome> {
         let schema = prompt::schema();
+        let defs = prompt::tools();
         loop {
             if cancel.load(Ordering::Relaxed) {
                 return Ok(self.outcome(self.partial_text(), Vec::new(), State::Stopped));
             }
             let last_turn = self.calls >= self.step_budget() || self.spent >= self.token_budget();
+            self.limit_hit = last_turn.then(|| if self.calls >= self.step_budget() { "steps" } else { "tokens" });
             let user = self.prompt(last_turn);
-            let step = self.next_step(model, &user, &schema)?;
+            let Some(step) = self.next_step(model, &user, &schema, &defs, cancel)? else {
+                return Ok(self.outcome(self.partial_text(), Vec::new(), State::Stopped));
+            };
             if self.effort.is_none() {
-                self.effort = Some(step.effort);
+                // A question that needed tools was never a plain lookup, whatever the model first guessed.
+                let used_tools = !matches!(step.call, Call::Answer { .. });
+                self.effort = Some(if used_tools && step.effort == Effort::Lookup { Effort::Explain } else { step.effort });
             }
             self.note_learned(&step.learned);
             match step.call {
@@ -138,7 +173,7 @@ impl Run {
                     self.read.extend(output.read.iter().cloned());
                     let mut items = output.shown.clone();
                     items.extend(output.read.iter().filter(|id| !output.shown.contains(id)).cloned());
-                    let label = label(&call);
+                    let label = output.label.clone().unwrap_or_else(|| label(&call));
                     on_event(&Event::Step { n: self.calls, tool: tool_name(&call), label: label.clone(), items });
                     self.last = Some((label, output.text));
                 }
@@ -147,20 +182,25 @@ impl Run {
     }
 
     fn outcome(&self, text: String, sources: Vec<Cited>, state: State) -> Outcome {
-        Outcome { text, sources, effort: self.effort(), state }
+        let limit_hit = if state == State::Partial { self.limit_hit } else { None };
+        tracing::info!(effort = self.effort().as_str(), steps = self.calls, prompt_tokens = self.spent, state = state.as_str(), limit = ?limit_hit, retries = self.refusals, "ask run ended");
+        Outcome { text, sources, effort: self.effort(), state, found: self.found.clone(), limit_hit }
+    }
+
+    /// Grants another stretch of steps and tokens (half the question's usual budget) so a partial
+    /// run can go on looking where it stopped.
+    pub fn extend(&mut self) {
+        self.extra_steps += (self.budget.steps(self.effort()) / 2).max(2);
+        self.extra_tokens += self.budget.tokens(self.effort()) / 2;
     }
 
     /// Until the model has said how big the question is, it may use the most.
     fn step_budget(&self) -> usize {
-        self.effort.unwrap_or(Effort::Survey).steps()
+        self.budget.steps(self.effort.unwrap_or(Effort::Survey)) + self.extra_steps
     }
 
     fn token_budget(&self) -> usize {
-        match self.effort {
-            Some(Effort::Lookup) => LOOKUP_TOKENS,
-            Some(Effort::Explain) | None => EXPLAIN_TOKENS,
-            Some(Effort::Survey) => SURVEY_TOKENS,
-        }
+        self.budget.tokens(self.effort.unwrap_or_default()) + self.extra_tokens
     }
 
     /// What the previous result taught, kept as one line so the result itself can be dropped.
@@ -180,33 +220,58 @@ impl Run {
         format!("I ran out of steps before finishing. What I found so far:\n{}", lines.join("\n"))
     }
 
-    /// One request; a reply that isn't a usable step is sent back once with what was wrong.
-    fn next_step(&mut self, model: &dyn Model, user: &str, schema: &Value) -> Result<Step> {
+    /// One request. A reply that isn't a usable step is sent back once with what was wrong; a rate
+    /// limit is waited out (the provider says for how long) a few times. `None`: stopped meanwhile.
+    fn next_step(&mut self, model: &dyn Model, user: &str, schema: &Value, tools: &[ToolDef], cancel: &AtomicBool) -> Result<Option<Step>> {
         let max_tokens = self.effort.unwrap_or_default().max_tokens();
         let mut asked = user.to_string();
-        let mut problem = String::new();
-        for attempt in 0..2 {
-            if attempt == 1 {
-                asked = format!("{user}\n\nYour previous reply was refused: {problem}. Reply again with one valid step.");
-            }
+        let (mut refused, mut limited) = (0, 0);
+        loop {
+            let problem;
             self.spent += asked.len() / 4;
-            let request = Request { system: prompt::SYSTEM, user: &asked, images: &[], schema, max_tokens };
+            let request = Request { system: prompt::SYSTEM, user: &asked, images: &[], schema, max_tokens, tools };
             match model.complete(&request) {
-                Ok(value) => match prompt::parse(value) {
-                    Ok(step) => return Ok(step),
-                    Err(why) => problem = why,
+                Ok(value) => match prompt::parse(value.clone()) {
+                    Ok(step) => return Ok(Some(step)),
+                    Err(why) => {
+                        // What models really send is the best guide to what to accept; kept in the log.
+                        tracing::warn!(%why, reply = %value.to_string().chars().take(600).collect::<String>(), "unusable ask step");
+                        problem = why;
+                    }
                 },
+                Err(LlmError::RateLimited(wait)) => {
+                    if limited == RATE_RETRIES {
+                        return Err(Error::Llm(LlmError::RateLimited(wait)));
+                    }
+                    limited += 1;
+                    if !pause(wait.unwrap_or(RATE_WAIT_DEFAULT).min(RATE_WAIT_MAX), cancel) {
+                        return Ok(None);
+                    }
+                    continue;
+                }
                 // The provider's answer wasn't JSON: worth one more go. Anything else (a bad key,
-                // no network, rate limits) is for the caller to deal with.
+                // no network) is for the caller to deal with.
                 Err(LlmError::Bad(why)) => problem = why,
                 Err(other) => return Err(Error::Llm(other)),
             }
+            refused += 1;
+            self.refusals += 1;
+            if refused == 2 {
+                return Err(Error::Llm(LlmError::Bad(format!("the model didn't give a usable step: {problem}"))));
+            }
+            asked = format!("{user}\n\nYour previous reply was refused: {problem}. Reply again with one valid step.");
         }
-        Err(Error::Llm(LlmError::Bad(format!("the model didn't give a usable step: {problem}"))))
     }
 
     fn prompt(&self, last_turn: bool) -> String {
-        let mut out = format!("Question: {}\n", self.question);
+        // The conversation first, then the question: the start of every prompt of a thread stays
+        // the same, which is what lets a provider cache it.
+        let mut out = String::new();
+        if !self.thread.is_empty() {
+            out.push_str(&self.thread);
+            out.push('\n');
+        }
+        out.push_str(&format!("Question: {}\n", self.question));
         if self.scope.is_some() {
             out.push_str("The user limited the question to part of the library; the tools already stay inside it.\n");
         }
@@ -226,10 +291,26 @@ impl Run {
         if last_turn {
             out.push_str("\nNo steps are left: answer now with what you have found (the answer tool).\n");
         } else {
+            if self.extra_steps > 0 {
+                out.push_str("\nYou ran out of steps earlier and have been given more: keep looking for what you had not yet found (the notes above show where you have been).\n");
+            }
             out.push_str(&format!("\nTool steps left: {}.\n", self.step_budget() - self.calls));
         }
         out
     }
+}
+
+/// Waits, noticing a stop. Returns false if it was stopped. (Short in tests.)
+fn pause(wait: Duration, cancel: &AtomicBool) -> bool {
+    let wait = if cfg!(test) { Duration::from_millis(1) } else { wait };
+    let end = std::time::Instant::now() + wait;
+    while std::time::Instant::now() < end {
+        if cancel.load(Ordering::Relaxed) {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100).min(end.saturating_duration_since(std::time::Instant::now())));
+    }
+    !cancel.load(Ordering::Relaxed)
 }
 
 fn tool_name(call: &Call) -> &'static str {
@@ -237,6 +318,7 @@ fn tool_name(call: &Call) -> &'static str {
         Call::Search { .. } => "search",
         Call::Read { .. } => "read",
         Call::Neighbors { .. } => "neighbors",
+        Call::Path { .. } => "path",
         Call::Topics { .. } => "topics",
         Call::Answer { .. } => "answer",
     }
@@ -248,6 +330,7 @@ fn label(call: &Call) -> String {
         Call::Search { query, .. } => format!("searched for \"{query}\""),
         Call::Read { item, .. } => format!("read {item}"),
         Call::Neighbors { item, .. } => format!("looked at what {item} links to"),
+        Call::Path { from, to } => format!("looked for how {from} and {to} connect"),
         Call::Topics { topic: Some(topic) } => format!("looked inside topic {topic}"),
         Call::Topics { topic: None } => "looked at the top-level topics".to_string(),
         Call::Answer { .. } => "answered".to_string(),
@@ -282,6 +365,7 @@ struct FailedEvent {
 pub fn spawn(app: &AppHandle, id: String) {
     let app = app.clone();
     std::thread::spawn(move || {
+        let _purpose = crate::usage::purpose(crate::usage::Purpose::Ask);
         let state = app.state::<AppState>();
         let finder = tools::AppFinder(&state);
         let outcome = crate::enrich::config_for(&state.settings.get().ai).and_then(|config| {
@@ -343,7 +427,7 @@ mod tests {
 
     impl Tools for Fixed {
         fn run(&mut self, _call: &Call) -> ToolOutput {
-            ToolOutput { text: self.0.to_string(), shown: vec!["i1".into()], read: vec!["i1".into()] }
+            ToolOutput { text: self.0.to_string(), shown: vec!["i1".into()], read: vec!["i1".into()], label: None }
         }
     }
 
@@ -374,7 +458,7 @@ mod tests {
     }
 
     fn run() -> Run {
-        Run::new("What is borrowing?", None, "i1 | Ownership | Each value has one owner".into(), vec!["i1".into()])
+        Run::new("What is borrowing?", None, "i1 | Ownership | Each value has one owner".into(), vec!["i1".into()], String::new(), Budget::default())
     }
 
     fn go(run: &mut Run, model: &Script, tools: &mut dyn Tools) -> Result<Outcome> {
@@ -410,27 +494,63 @@ mod tests {
     }
 
     #[test]
-    fn a_small_question_gets_few_steps_then_is_told_to_answer() {
-        let mut replies = vec![Ok(search("lookup", ""))];
-        replies.extend((0..2).map(|_| Ok(search("lookup", "still looking"))));
+    fn a_question_gets_its_steps_then_is_told_to_answer() {
+        // An explanation allows 8 tool steps; the ninth prompt says none are left.
+        let mut replies = vec![Ok(search("explain", ""))];
+        replies.extend((0..7).map(|_| Ok(search("explain", "still looking"))));
         replies.push(Ok(answer("Best guess [1].")));
         let model = Script::new(replies);
         let outcome = go(&mut run(), &model, &mut Fixed("r")).unwrap();
         let prompts = model.prompts.borrow();
-        assert_eq!(prompts.len(), 4);
-        assert!(prompts[3].contains("No steps are left"));
-        assert!(!prompts[2].contains("No steps are left"));
+        assert_eq!(prompts.len(), 9);
+        assert!(prompts[8].contains("No steps are left"));
+        assert!(!prompts[7].contains("No steps are left"));
         // Answering only on the last turn means the budget was used up.
         assert_eq!(outcome.state, State::Partial);
         assert_eq!(outcome.text, "Best guess [1].");
-        // A lookup's reply is capped small once the effort is known.
-        assert_eq!(model.max_tokens.borrow()[1], Effort::Lookup.max_tokens());
+        // A reply is capped once the effort is known.
+        assert_eq!(model.max_tokens.borrow()[1], Effort::Explain.max_tokens());
+    }
+
+    #[test]
+    fn a_question_that_needed_tools_is_never_treated_as_a_lookup() {
+        // The model calls itself "lookup" but searches: it gets an explanation's budget, not 3 steps.
+        let mut replies = vec![Ok(search("lookup", ""))];
+        replies.extend((0..5).map(|_| Ok(search("lookup", "more"))));
+        replies.push(Ok(answer("Found it [1].")));
+        let model = Script::new(replies);
+        let mut run = run();
+        let outcome = go(&mut run, &model, &mut Fixed("r")).unwrap();
+        assert_eq!(outcome.state, State::Done);
+        assert_eq!(outcome.effort, Effort::Explain);
+        assert_eq!(model.prompts.borrow().len(), 7);
+    }
+
+    #[test]
+    fn a_partial_answer_says_what_ran_out_and_can_be_extended() {
+        let mut replies = vec![Ok(search("explain", ""))];
+        replies.extend((0..7).map(|_| Ok(search("explain", "still looking"))));
+        replies.push(Ok(answer("Best guess [1].")));
+        // After "keep looking" it searches a little more and finds the answer.
+        replies.push(Ok(search("explain", "")));
+        replies.push(Ok(answer("Found it [1].")));
+        let model = Script::new(replies);
+        let mut run = run();
+        let first = go(&mut run, &model, &mut Fixed("r")).unwrap();
+        assert_eq!(first.state, State::Partial);
+        assert_eq!(first.limit_hit, Some("steps"));
+        run.extend();
+        let second = go(&mut run, &model, &mut Fixed("r")).unwrap();
+        assert_eq!(second.state, State::Done);
+        assert_eq!(second.limit_hit, None);
+        let prompts = model.prompts.borrow();
+        assert!(prompts[prompts.len() - 2].contains("been given more"));
     }
 
     #[test]
     fn a_model_that_will_not_answer_leaves_what_it_found() {
-        let mut replies = vec![Ok(search("lookup", ""))];
-        replies.extend((0..3).map(|_| Ok(search("lookup", "owners are unique"))));
+        let mut replies = vec![Ok(search("explain", ""))];
+        replies.extend((0..8).map(|_| Ok(search("explain", "owners are unique"))));
         let model = Script::new(replies);
         let outcome = go(&mut run(), &model, &mut Fixed("r")).unwrap();
         assert_eq!(outcome.state, State::Partial);
@@ -441,8 +561,8 @@ mod tests {
 
     #[test]
     fn the_token_budget_ends_a_run_too() {
-        let big = "x".repeat(40_000);
-        let model = Script::new(vec![Ok(search("lookup", "")), Ok(search("lookup", "a")), Ok(answer("Done [1]."))]);
+        let big = "x".repeat(130_000);
+        let model = Script::new(vec![Ok(search("explain", "")), Ok(search("explain", "a")), Ok(answer("Done [1]."))]);
         let outcome = go(&mut run(), &model, &mut Fixed(Box::leak(big.into_boxed_str()))).unwrap();
         // The second prompt carries the huge result, which is past a lookup's budget.
         assert_eq!(model.prompts.borrow().len(), 3);
@@ -457,6 +577,21 @@ mod tests {
         assert_eq!(outcome.state, State::Done);
         let prompts = model.prompts.borrow();
         assert!(prompts[1].contains("refused: search needs a query"));
+    }
+
+    #[test]
+    fn a_rate_limit_is_waited_out_and_only_a_stubborn_one_ends_the_run() {
+        let limited = || Err(LlmError::RateLimited(Some(Duration::from_secs(2))));
+        let model = Script::new(vec![limited(), limited(), Ok(answer("Fine [1]."))]);
+        let outcome = go(&mut run(), &model, &mut Fixed("")).unwrap();
+        assert_eq!(outcome.state, State::Done);
+        assert_eq!(model.prompts.borrow().len(), 3);
+        // Not a "refused step": the prompt is the same each time.
+        assert!(!model.prompts.borrow()[2].contains("refused"));
+
+        let model = Script::new(vec![limited(), limited(), limited(), limited()]);
+        let error = go(&mut run(), &model, &mut Fixed("")).unwrap_err();
+        assert!(matches!(error, Error::Llm(LlmError::RateLimited(_))));
     }
 
     #[test]

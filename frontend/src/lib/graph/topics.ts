@@ -14,8 +14,15 @@ const MIN_RADIUS = 34
  * topics hold until you have zoomed in properly). */
 const CHILD_TAKEOVER = [1.3, 2.0]
 const CHILD_VIEW_SHARE = [0.16, 0.26]
-/** Names fade out when the topic is this big on screen (we are inside it; its items show). */
+/** Names fade out when the topic is this big on screen (we are inside it; its items show). This
+ * starts only once the take-over from a parent's name is complete (see `draw`), so a name that has
+ * just taken over is not already fading. */
 const LEAF_FADE = [90, 170]
+/** Zoomed right out (the whole map in view), top-level names stay at least this visible: they are
+ * the map's legend. */
+const OVERVIEW_FLOOR = 0.85
+/** The camera ratio between which that floor comes in (1 shows the whole map). */
+const OVERVIEW_RATIO = [0.55, 0.85]
 /** ...or, for a topic with sub-topics, this share of the view's shorter side. */
 const INSIDE_FADE = [0.55, 0.95]
 /** Spread of a topic's items to region radius: how far past the typical distance it reaches. */
@@ -248,6 +255,12 @@ export class TopicLayer {
       const parent = this.topics.get(id)?.parentId
       return parent && this.topics.has(parent) ? takeoverOf(parent) * appearing(parent) : 1
     }
+    // A name that has just taken over from its parent's must not already be fading as a leaf.
+    const takeoverEnd = Math.max(MIN_RADIUS * CHILD_TAKEOVER[1], view * CHILD_VIEW_SHARE[1])
+    const leafFrom = Math.max(LEAF_FADE[0], takeoverEnd + 10)
+    const leafTo = Math.max(LEAF_FADE[1], leafFrom + 80)
+    // 1 when the whole map is in view (ratio 1 or more), 0 once zoomed in.
+    const overview = smooth(camera.ratio, OVERVIEW_RATIO[0], OVERVIEW_RATIO[1])
     const alpha = new Map<string, number>()
     /** The same without the picked topic's boost: what the zoom alone says. */
     const natural = new Map<string, number>()
@@ -259,9 +272,11 @@ export class TopicLayer {
         a *= 1 - takeoverOf(id)
         a *= 1 - smooth(r, view * INSIDE_FADE[0], view * INSIDE_FADE[1])
       } else {
-        a *= 1 - smooth(r, LEAF_FADE[0], LEAF_FADE[1])
+        a *= 1 - smooth(r, leafFrom, leafTo)
       }
       if (a > 0.02 && topic.count > 0) natural.set(id, a)
+      // At overview the top-level names are always there, as the map's legend.
+      if (!topic.parentId && topic.count > 0 && this.shapes.has(id)) a = Math.max(a, overview * OVERVIEW_FLOOR)
       // The picked topic keeps its name whatever the zoom.
       if (id === this.selected) a = Math.max(a, 0.9)
       if (a > 0.02 && topic.count > 0) alpha.set(id, a)
@@ -270,7 +285,8 @@ export class TopicLayer {
     // Regions first, biggest first so the small ones sit on top.
     const visible = [...alpha.keys()].sort((a, b) => radiusOf(b) - radiusOf(a))
     for (const id of visible) {
-      const shape = this.shapes.get(id)!
+      const shape = this.shapes.get(id)
+      if (!shape) continue
       const at = this.sigma.graphToViewport({ x: shape.x, y: shape.y })
       const r = radiusOf(id) * 1.2
       if (at.x + r < 0 || at.y + r < 0 || at.x - r > width || at.y - r > height) continue
@@ -296,7 +312,8 @@ export class TopicLayer {
     const byCount = visible.slice().sort((a, b) => (this.topics.get(b)!.count - this.topics.get(a)!.count) || a.localeCompare(b))
     for (const id of byCount) {
       const topic = this.topics.get(id)!
-      const shape = this.shapes.get(id)!
+      const shape = this.shapes.get(id)
+      if (!shape) continue
       const at = this.sigma.graphToViewport({ x: shape.x, y: shape.y })
       names.font = `${FONT[Math.min(topic.level, FONT.length - 1)]} system-ui, sans-serif`
       const label = topic.label

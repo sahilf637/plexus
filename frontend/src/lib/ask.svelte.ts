@@ -1,7 +1,9 @@
 // The Ask feature's state, shared by the panel (what to show) and the map (where the agent is
 // looking). Events from the backend arrive through the `on...` functions.
 
-import { askDelete, askHistory, askResume, askStart, askStop, search } from './api'
+import { SvelteSet } from 'svelte/reactivity'
+import { askContinue, askDelete, askHistory, askResume, askStart, askStop, search } from './api'
+import { toast } from './toasts.svelte'
 import type { Ask, AskFailed, AskStep } from './types'
 
 /** Where the question was last put: the whole library, or one topic or note. */
@@ -16,6 +18,8 @@ interface AskState {
   scope: AskScope | null
   /** The question on screen: running, or finished (also a past one reopened from the history). */
   current: Ask | null
+  /** The questions before `current` in the same conversation, oldest first. */
+  earlier: Ask[]
   /** The tools it has run so far, oldest first. */
   steps: AskStep[]
   history: Ask[]
@@ -33,6 +37,7 @@ export const ask = $state<AskState>({
   historyOpen: false,
   scope: null,
   current: null,
+  earlier: [],
   steps: [],
   history: [],
   error: null,
@@ -55,6 +60,7 @@ export const cited = (): string[] => ask.current?.sources.map((s) => s.itemId) ?
 
 function plainError(message: string): string {
   if (/daily/i.test(message)) return "You've used today's questions. Raise the limit in Settings → AI, or try tomorrow."
+  if (/limiting requests/i.test(message)) return 'The AI provider is limiting requests (often a per-minute cap). Wait a little, then press Continue.'
   return message
 }
 
@@ -64,7 +70,11 @@ export async function loadHistory() {
   } catch {}
 }
 
-/** Asks a question. With no AI connected, shows what search finds instead. */
+/** A conversation can go on once its latest question has an answer. */
+const canFollow = (a: Ask | null): a is Ask => !!a && !!a.answer && ['done', 'partial', 'stopped'].includes(a.state)
+
+/** Asks a question, as a follow-up when there is an answer on screen to follow. With no AI
+ * connected, shows what search finds instead. */
 export async function startAsk(question: string) {
   const text = question.trim()
   if (!text || running()) return
@@ -72,17 +82,33 @@ export async function startAsk(question: string) {
   ask.canResume = false
   ask.fallback = null
   ask.historyOpen = false
+  const follows = canFollow(ask.current) ? ask.current : null
   try {
+    const started = await askStart(text, ask.scope?.id, follows?.threadId)
+    ask.earlier = follows ? [...ask.earlier, follows] : []
     ask.steps = []
-    ask.current = await askStart(text, ask.scope?.id)
+    ask.current = started
   } catch (e) {
-    ask.current = null
     const message = String(e)
     if (message.includes('Connect an AI')) {
+      ask.current = null
+      ask.earlier = []
       ask.fallback = { question: text, ids: (await search(text).catch(() => [])).slice(0, 8) }
     } else {
       ask.error = plainError(message)
     }
+  }
+}
+
+/** An answer that used up its steps can go on looking, from where it stopped. */
+export async function keepLooking() {
+  if (!ask.current || !ask.current.limitHit) return
+  ask.error = null
+  try {
+    await askContinue(ask.current.id)
+    ask.current = { ...ask.current, state: 'running' }
+  } catch (e) {
+    ask.error = plainError(String(e))
   }
 }
 
@@ -105,6 +131,7 @@ export async function resumeAsk() {
 /** Goes back to an empty panel, ready for a new question. */
 export function newAsk() {
   ask.current = null
+  ask.earlier = []
   ask.steps = []
   ask.error = null
   ask.canResume = false
@@ -112,9 +139,28 @@ export function newAsk() {
   ask.historyOpen = false
 }
 
-/** Shows a past question and its answer. */
-export function reopen(past: Ask) {
-  ask.current = past
+/** The conversations in the history, the most recently used first. */
+/** Conversations deleted a moment ago, still undoable: hidden now, removed for good after a while. */
+const pendingDelete = new SvelteSet<string>()
+const UNDO_MS = 8000
+
+export function threads(): { id: string; first: Ask; latest: Ask; count: number }[] {
+  const byThread = new Map<string, Ask[]>()
+  for (const past of ask.history.filter((a) => !pendingDelete.has(a.threadId))) byThread.set(past.threadId, [...(byThread.get(past.threadId) ?? []), past])
+  return [...byThread.entries()]
+    .map(([id, asks]) => {
+      const sorted = asks.toSorted((a, b) => a.createdAt.localeCompare(b.createdAt))
+      return { id, first: sorted[0], latest: sorted[sorted.length - 1], count: sorted.length }
+    })
+    .sort((a, b) => b.latest.createdAt.localeCompare(a.latest.createdAt))
+}
+
+/** Shows a past conversation, ready to go on with. */
+export function reopen(threadId: string) {
+  const asks = ask.history.filter((a) => a.threadId === threadId).toSorted((a, b) => a.createdAt.localeCompare(b.createdAt))
+  if (!asks.length) return
+  ask.current = asks[asks.length - 1]
+  ask.earlier = asks.slice(0, -1)
   ask.steps = []
   ask.error = null
   ask.canResume = false
@@ -122,10 +168,23 @@ export function reopen(past: Ask) {
   ask.historyOpen = false
 }
 
-export async function removeAsk(id: string) {
-  await askDelete(id)
-  ask.history = ask.history.filter((a) => a.id !== id)
-  if (ask.current?.id === id) newAsk()
+/** Deletes a whole conversation, with a moment to change your mind. */
+export function removeThread(threadId: string) {
+  const ids = ask.history.filter((a) => a.threadId === threadId).map((a) => a.id)
+  if (!ids.length) return
+  pendingDelete.add(threadId)
+  if (ask.current?.threadId === threadId) {
+    // The open conversation goes, but the list you are deleting from stays.
+    const open = ask.historyOpen
+    newAsk()
+    ask.historyOpen = open
+  }
+  const timer = setTimeout(async () => {
+    await Promise.all(ids.map((id) => askDelete(id).catch(() => {})))
+    ask.history = ask.history.filter((a) => a.threadId !== threadId)
+    pendingDelete.delete(threadId)
+  }, UNDO_MS)
+  toast('Deleted the conversation', { label: 'Undo', run: () => { clearTimeout(timer); pendingDelete.delete(threadId) } }, UNDO_MS)
 }
 
 export function onAskStep(step: AskStep) {

@@ -12,7 +12,8 @@ pub mod keys;
 pub mod models;
 pub mod openai;
 
-use std::sync::LazyLock;
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -47,6 +48,15 @@ pub struct Image {
     pub bytes: Vec<u8>,
 }
 
+/// A tool the model may call, for providers that support calling tools natively.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ToolDef {
+    pub name: String,
+    pub description: String,
+    /// JSON schema of its arguments.
+    pub parameters: Value,
+}
+
 pub struct Request<'a> {
     pub system: &'a str,
     pub user: &'a str,
@@ -56,6 +66,10 @@ pub struct Request<'a> {
     pub schema: &'a Value,
     /// Cap on the answer's length, for providers that need one.
     pub max_tokens: u32,
+    /// Tools to call instead of answering with `schema`. When there are some and the model can
+    /// call tools, the reply is the call as `{"tool": name, …arguments}` (or `{"text": …}` if it
+    /// just wrote something); otherwise the schema is used as usual.
+    pub tools: &'a [ToolDef],
 }
 
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
@@ -71,10 +85,65 @@ pub enum LlmError {
     /// The provider refused the request, or its answer wasn't usable. Trying again won't help.
     #[error("{0}")]
     Bad(String),
+    /// This model can't call tools; ask for JSON instead.
+    #[error("this model can't call tools: {0}")]
+    NoTools(String),
 }
 
-/// Sends the request and returns the provider's answer as JSON.
+/// (server, model) → whether calling tools natively works there (known once tried).
+static TOOLS: LazyLock<Mutex<HashMap<(String, String), bool>>> = LazyLock::new(Default::default);
+
+fn tools_key(config: &Config) -> (String, String) {
+    (config.base_url.clone(), config.model.clone())
+}
+
+/// Whether this connection's model is known to call tools natively (`None`: not tried yet).
+pub fn tool_calling(config: &Config) -> Option<bool> {
+    TOOLS.lock().expect("tools lock poisoned").get(&tools_key(config)).copied()
+}
+
+thread_local! {
+    /// Tokens the provider reported for the call in progress on this thread: (in, out).
+    static TOKENS: std::cell::Cell<Option<(u64, u64)>> = const { std::cell::Cell::new(None) };
+}
+
+/// Adds the tokens a provider's reply says it used (a call may take several requests).
+pub(crate) fn note_tokens(input: Option<u64>, output: Option<u64>) {
+    if input.is_none() && output.is_none() {
+        return;
+    }
+    let (i, o) = TOKENS.get().unwrap_or_default();
+    TOKENS.set(Some((i + input.unwrap_or(0), o + output.unwrap_or(0))));
+}
+
+/// Sends the request and returns the provider's answer as JSON. With tools, the model calls one
+/// (the reply is `{"tool": name, …arguments}`); a model that can't falls back to the schema. Each
+/// call is reported to `usage`.
 pub fn complete_json(config: &Config, request: &Request) -> Result<Value, LlmError> {
+    TOKENS.set(None);
+    let result = complete_inner(config, request);
+    crate::usage::note(&result, TOKENS.take());
+    result
+}
+
+fn complete_inner(config: &Config, request: &Request) -> Result<Value, LlmError> {
+    if !request.tools.is_empty() && tool_calling(config) != Some(false) {
+        let tried = match config.kind {
+            ProviderKind::OpenAi => openai::complete_tools(config, request),
+            ProviderKind::Anthropic => anthropic::complete_tools(config, request),
+            ProviderKind::Gemini => gemini::complete_tools(config, request),
+        };
+        match tried {
+            Ok(value) => {
+                TOOLS.lock().expect("tools lock poisoned").insert(tools_key(config), true);
+                return Ok(value);
+            }
+            Err(LlmError::NoTools(_)) => {
+                TOOLS.lock().expect("tools lock poisoned").insert(tools_key(config), false);
+            }
+            Err(other) => return Err(other),
+        }
+    }
     match config.kind {
         ProviderKind::OpenAi => openai::complete(config, request),
         ProviderKind::Anthropic => anthropic::complete(config, request),
@@ -96,6 +165,7 @@ pub fn test(config: &Config) -> Result<(), LlmError> {
         images: &[],
         schema: &schema,
         max_tokens: 50,
+        tools: &[],
     };
     complete_json(config, &request).map(|_| ())
 }
@@ -199,6 +269,54 @@ fn error_message(body: &str) -> Option<String> {
     let error = json.get("error").unwrap_or(&json);
     let message = error.get("message").or(error.as_str().map(|_| error)).and_then(Value::as_str)?;
     Some(message.chars().take(300).collect())
+}
+
+/// Whether a refusal says the model can't call tools (as against a call that came out wrong,
+/// which is worth another try).
+pub(crate) fn tools_unsupported(reply: &Reply) -> Option<String> {
+    if !matches!(reply.status, 400 | 404 | 422) {
+        return None;
+    }
+    let body = reply.body.to_lowercase();
+    // A malformed call (Groq's `tool_use_failed`) is the model's slip, not a missing feature.
+    if body.contains("tool_use_failed") || body.contains("failed to call a function") {
+        return None;
+    }
+    let says_tools = body.contains("tool") || body.contains("function");
+    let says_no = ["not support", "unsupported", "not enabled", "doesn't support", "does not support", "no endpoints found"].iter().any(|w| body.contains(w));
+    (says_tools && says_no).then(|| error_message(&reply.body).unwrap_or_else(|| format!("HTTP {}", reply.status)))
+}
+
+/// The call in a model's tool-call arguments, with the tool's name added: `{"tool": name, …}`.
+pub(crate) fn tool_step(name: &str, arguments: Value) -> Result<Value, LlmError> {
+    let mut step = match arguments {
+        Value::Object(map) => map,
+        Value::Null => serde_json::Map::new(),
+        // Some servers send the arguments as a JSON string.
+        Value::String(text) => match serde_json::from_str::<Value>(&text) {
+            Ok(Value::Object(map)) => map,
+            _ if text.trim().is_empty() => serde_json::Map::new(),
+            _ => return Err(LlmError::Bad("the tool call's arguments weren't JSON".into())),
+        },
+        _ => return Err(LlmError::Bad("the tool call's arguments weren't an object".into())),
+    };
+    step.insert("tool".into(), Value::String(name.to_string()));
+    Ok(Value::Object(step))
+}
+
+/// What a model wrote instead of calling a tool: a step in JSON if it gave one, else its words
+/// (which `ask` takes as an answer).
+pub(crate) fn text_step(text: &str) -> Result<Value, LlmError> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(LlmError::Bad("the reply had no tool call and no text".into()));
+    }
+    if let Ok(json @ Value::Object(_)) = json_from_text(text)
+        && json.get("tool").is_some()
+    {
+        return Ok(json);
+    }
+    Ok(json!({ "text": text }))
 }
 
 /// The JSON object in a model's text answer, even when it is wrapped in a code fence or text.
@@ -325,7 +443,7 @@ mod http_tests {
 
     fn ask(config: &Config) -> Result<Value, LlmError> {
         let schema = json!({"type": "object"});
-        complete_json(config, &Request { system: "s", user: "u", images: &[], schema: &schema, max_tokens: 50 })
+        complete_json(config, &Request { system: "s", user: "u", images: &[], schema: &schema, max_tokens: 50, tools: &[] })
     }
 
     fn chat(text: &str) -> String {
@@ -387,5 +505,126 @@ mod http_tests {
         assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["alpha", "zeta"]);
         assert!(seen.lock().unwrap()[0].0.starts_with("GET /v1/models"));
         assert_eq!(models::list(&config).unwrap_err(), LlmError::Auth("nope".into()));
+    }
+
+    // --- calling tools ------------------------------------------------------------------
+
+    fn tool_defs() -> Vec<ToolDef> {
+        vec![ToolDef { name: "search".into(), description: "Find".into(), parameters: json!({ "type": "object" }) }]
+    }
+
+    fn ask_with_tools(config: &Config) -> Result<Value, LlmError> {
+        let schema = json!({"type": "object"});
+        let tools = tool_defs();
+        complete_json(config, &Request { system: "s", user: "u", images: &[], schema: &schema, max_tokens: 50, tools: &tools })
+    }
+
+    fn call(name: &str, arguments: &str) -> String {
+        json!({ "choices": [{ "message": { "tool_calls": [{ "function": { "name": name, "arguments": arguments } }] } }] }).to_string()
+    }
+
+    #[test]
+    fn an_openai_style_model_calls_a_tool_and_is_remembered_to_be_able_to() {
+        let (base, seen) = serve(vec![(200, call("search", r#"{"query":"borrow"}"#))]);
+        let config = config(ProviderKind::OpenAi, &format!("{base}/v1"), None);
+        assert_eq!(ask_with_tools(&config).unwrap(), json!({ "tool": "search", "query": "borrow" }));
+        let sent: Value = serde_json::from_str(&seen.lock().unwrap()[0].1).unwrap();
+        assert_eq!(sent["tools"][0]["function"]["name"], "search");
+        assert_eq!(sent["tool_choice"], "required");
+        assert_eq!(tool_calling(&config), Some(true));
+    }
+
+    #[test]
+    fn a_server_that_rejects_required_tool_choice_is_asked_with_auto() {
+        let refusal = json!({ "error": { "message": "tool_choice 'required' is not supported" } }).to_string();
+        let (base, seen) = serve(vec![(400, refusal), (200, call("read", r#"{"item":"n1"}"#))]);
+        let config = config(ProviderKind::OpenAi, &format!("{base}/v1"), None);
+        assert_eq!(ask_with_tools(&config).unwrap(), json!({ "tool": "read", "item": "n1" }));
+        let second: Value = serde_json::from_str(&seen.lock().unwrap()[1].1).unwrap();
+        assert_eq!(second["tool_choice"], "auto");
+    }
+
+    #[test]
+    fn a_model_that_cannot_call_tools_falls_back_to_json_and_is_not_asked_again() {
+        let refusal = json!({ "error": { "message": "registry.ollama.ai/library/gemma does not support tools" } }).to_string();
+        let (base, seen) = serve(vec![(400, refusal), (200, chat(r#"{"tool": "answer", "text": "Hi"}"#)), (200, chat(r#"{"tool": "answer", "text": "Again"}"#))]);
+        let config = config(ProviderKind::OpenAi, &format!("{base}/v1"), None);
+        assert_eq!(ask_with_tools(&config).unwrap()["text"], "Hi");
+        assert_eq!(tool_calling(&config), Some(false));
+        // The second call goes straight to JSON: one request, no tools in it.
+        assert_eq!(ask_with_tools(&config).unwrap()["text"], "Again");
+        let requests = seen.lock().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert!(!requests[2].1.contains("\"tools\""));
+    }
+
+    #[test]
+    fn a_malformed_call_is_the_models_slip_not_a_missing_feature() {
+        let slip = json!({ "error": { "message": "Failed to call a function. Please adjust your prompt.", "code": "tool_use_failed" } }).to_string();
+        let (base, _) = serve(vec![(400, slip)]);
+        let config = config(ProviderKind::OpenAi, &format!("{base}/v1"), None);
+        assert!(matches!(ask_with_tools(&config), Err(LlmError::Bad(_))));
+        assert_eq!(tool_calling(&config), None);
+    }
+
+    #[test]
+    fn words_instead_of_a_call_come_back_as_text_or_as_a_step_written_out() {
+        let words = json!({ "choices": [{ "message": { "content": "The notes say one owner." } }] }).to_string();
+        let (base, _) = serve(vec![(200, words)]);
+        assert_eq!(ask_with_tools(&config(ProviderKind::OpenAi, &format!("{base}/v1"), None)).unwrap(), json!({ "text": "The notes say one owner." }));
+        let written = json!({ "choices": [{ "message": { "content": "```json\n{\"tool\": \"topics\"}\n```" } }] }).to_string();
+        let (base, _) = serve(vec![(200, written)]);
+        assert_eq!(ask_with_tools(&config(ProviderKind::OpenAi, &format!("{base}/v1"), None)).unwrap(), json!({ "tool": "topics" }));
+    }
+
+    #[test]
+    fn anthropic_and_gemini_calls_become_the_same_step() {
+        let reply = json!({ "content": [{ "type": "text", "text": "Let me look." }, { "type": "tool_use", "name": "read", "input": { "item": "n2" } }] });
+        let (base, seen) = serve(vec![(200, reply.to_string())]);
+        assert_eq!(ask_with_tools(&config(ProviderKind::Anthropic, &base, Some("k"))).unwrap(), json!({ "tool": "read", "item": "n2" }));
+        assert_eq!(serde_json::from_str::<Value>(&seen.lock().unwrap()[0].1).unwrap()["tool_choice"]["type"], "any");
+
+        let reply = json!({ "candidates": [{ "content": { "parts": [{ "functionCall": { "name": "neighbors", "args": { "item": "n3", "depth": 2 } } }] } }] });
+        let (base, _) = serve(vec![(200, reply.to_string())]);
+        assert_eq!(
+            ask_with_tools(&config(ProviderKind::Gemini, &base, Some("k"))).unwrap(),
+            json!({ "tool": "neighbors", "item": "n3", "depth": 2 })
+        );
+    }
+
+    #[test]
+    fn gemini_without_function_calling_falls_back_too() {
+        let refusal = json!({ "error": { "message": "Function calling is not enabled for models/gemma-3" } }).to_string();
+        let ok = json!({ "candidates": [{ "content": { "parts": [{ "text": "{\"tool\": \"topics\"}" }] } }] }).to_string();
+        let (base, _) = serve(vec![(400, refusal), (200, ok)]);
+        let config = config(ProviderKind::Gemini, &base, Some("k"));
+        assert_eq!(ask_with_tools(&config).unwrap(), json!({ "tool": "topics" }));
+        assert_eq!(tool_calling(&config), Some(false));
+    }
+
+    #[test]
+    fn the_tokens_each_provider_reports_are_picked_up() {
+        let tokens = |reply: Value, kind: ProviderKind, key: Option<&str>| {
+            let (base, _) = serve(vec![(200, reply.to_string())]);
+            let config = config(kind, &format!("{base}/v1"), key);
+            let schema = json!({"type": "object"});
+            let request = Request { system: "s", user: "u", images: &[], schema: &schema, max_tokens: 50, tools: &[] };
+            TOKENS.set(None);
+            let _ = match kind {
+                ProviderKind::OpenAi => openai::complete(&config, &request),
+                ProviderKind::Anthropic => anthropic::complete(&config, &request),
+                ProviderKind::Gemini => gemini::complete(&config, &request),
+            };
+            TOKENS.take()
+        };
+        let openai = json!({ "choices": [{ "message": { "content": "{\"ok\": true}" } }], "usage": { "prompt_tokens": 120, "completion_tokens": 30 } });
+        assert_eq!(tokens(openai, ProviderKind::OpenAi, None), Some((120, 30)));
+        let anthropic = json!({ "content": [{ "type": "tool_use", "name": "answer", "input": { "ok": true } }], "usage": { "input_tokens": 200, "output_tokens": 15 } });
+        assert_eq!(tokens(anthropic, ProviderKind::Anthropic, Some("k")), Some((200, 15)));
+        let gemini = json!({ "candidates": [{ "content": { "parts": [{ "text": "{\"ok\": true}" }] } }], "usageMetadata": { "promptTokenCount": 77, "candidatesTokenCount": 9 } });
+        assert_eq!(tokens(gemini, ProviderKind::Gemini, Some("k")), Some((77, 9)));
+        // A server that says nothing about usage (many local ones) just has no numbers.
+        let plain = json!({ "choices": [{ "message": { "content": "{\"ok\": true}" } }] });
+        assert_eq!(tokens(plain, ProviderKind::OpenAi, None), None);
     }
 }

@@ -102,7 +102,7 @@ pub fn name(app: &AppHandle, state: &AppState, topic_id: &str) -> Result<()> {
     let Some(prompt) = state.db.with(|conn| prompt_for(conn, topic_id))? else { return Ok(()) };
     let config = enrich::config_for(&ai)?;
     let schema = schema();
-    let request = Request { system: SYSTEM, user: &prompt.user, images: &[], schema: &schema, max_tokens: MAX_ANSWER_TOKENS };
+    let request = Request { system: SYSTEM, user: &prompt.user, images: &[], schema: &schema, max_tokens: MAX_ANSWER_TOKENS, tools: &[] };
     let reply = enrich::call(state, &ai, &config, &request)?;
     let answer: Answer = serde_json::from_value(reply).map_err(|e| LlmError::Bad(format!("the answer didn't fit: {e}")))?;
     let Some((label, summary)) = clean(&answer) else {

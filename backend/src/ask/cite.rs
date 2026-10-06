@@ -49,7 +49,52 @@ pub fn check(text: &str, cited: &[Cited], resolve: &dyn Fn(&str) -> Option<Strin
         kept.push(Source { n, item_id: id, quote: source.quote.trim().to_string() });
     }
 
-    Checked { text: renumber(text, &renumbered), unsupported: !cited.is_empty() && kept.is_empty(), sources: kept }
+    // The model sometimes marks claims with the note's name (`[n2]`) instead of a number, and
+    // writes names into the prose; both are put right.
+    let mut by_name: HashMap<String, i64> = HashMap::new();
+    for source in cited {
+        if let Some(n) = renumbered.get(&source.n) {
+            by_name.entry(source.item.trim().to_string()).or_insert(*n);
+        }
+    }
+    let text = renumber(text, &renumbered);
+    let text = name_marks(&text, &by_name);
+    let text = title_names(&text, resolve, seen, text_of);
+    Checked { text, unsupported: !cited.is_empty() && kept.is_empty(), sources: kept }
+}
+
+/// `[n2]` and `[n1, n3]` become the numbers of the sources on those notes; ones with no source go.
+fn name_marks(text: &str, by_name: &HashMap<String, i64>) -> String {
+    static MARK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"([ \t]?)\[(n\d{1,3}(?:\s*,\s*n\d{1,3})*)\]").unwrap());
+    MARK.replace_all(text, |caps: &regex::Captures| {
+        let mut numbers: Vec<i64> = caps[2].split(',').filter_map(|name| by_name.get(name.trim()).copied()).collect();
+        numbers.sort_unstable();
+        numbers.dedup();
+        if numbers.is_empty() {
+            return String::new();
+        }
+        let joined: Vec<String> = numbers.iter().map(i64::to_string).collect();
+        format!("{}[{}]", &caps[1], joined.join(", "))
+    })
+    .into_owned()
+}
+
+/// A bare `n2` in the prose becomes the note's title.
+fn title_names(text: &str, resolve: &dyn Fn(&str) -> Option<String>, seen: &HashSet<String>, text_of: &dyn Fn(&str) -> Option<String>) -> String {
+    static NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bn\d{1,3}\b").unwrap());
+    NAME.replace_all(text, |caps: &regex::Captures| {
+        let name = &caps[0];
+        let title = resolve(name)
+            .filter(|id| seen.contains(id))
+            .and_then(|id| text_of(&id))
+            .and_then(|body| body.lines().next().map(|line| line.trim().to_string()))
+            .filter(|title| !title.is_empty());
+        match title {
+            Some(title) => format!("“{title}”"),
+            None => name.to_string(),
+        }
+    })
+    .into_owned()
 }
 
 /// Rewrites `[2]` and `[1, 3]` with the new numbers; marks for dropped sources disappear.
@@ -86,8 +131,8 @@ mod tests {
             _ => None,
         };
         let text_of = |id: &str| match id {
-            "i1" => Some("Each value has   one owner.\nBorrowing lends it out.".to_string()),
-            "i2" => Some("The borrow checker enforces the rules.".to_string()),
+            "i1" => Some("Ownership\n\nEach value has   one owner.\nBorrowing lends it out.".to_string()),
+            "i2" => Some("Borrow checker\n\nThe borrow checker enforces the rules.".to_string()),
             "i3" => Some("A note that was never shown, with a real quote in it.".to_string()),
             _ => None,
         };
@@ -137,6 +182,16 @@ mod tests {
         let none = run("Your notes don't cover this.", &[]);
         assert!(!none.unsupported);
         assert_eq!(none.text, "Your notes don't cover this.");
+    }
+
+    #[test]
+    fn marks_written_as_note_names_become_numbers_and_names_in_the_prose_become_titles() {
+        let out = run(
+            "Note n2 explains the rules [n2]. Owners are unique [n1, n2]. Made up [n3].",
+            &[cited(1, "n1", "has one owner"), cited(2, "n2", "enforces the rules")],
+        );
+        assert_eq!(out.text, "Note “Borrow checker” explains the rules [2]. Owners are unique [1, 2]. Made up.");
+        assert_eq!(out.sources.len(), 2);
     }
 
     #[test]

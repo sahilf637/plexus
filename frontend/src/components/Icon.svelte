@@ -27,6 +27,8 @@
     | 'send'
     | 'stop'
     | 'target'
+    | 'copy'
+    | 'chart'
 </script>
 
 <script lang="ts">
@@ -34,9 +36,11 @@
   let { name, size = 16 }: { name: IconName; size?: number } = $props()
 
   const paths: Record<IconName, string> = {
+    chart: 'M5 20V11M12 20V4M19 20v-6',
     history: 'M4 12a8 8 0 1 0 2.3-5.7M4 5v4h4M12 8v4l3 2',
     send: 'M5 12l14-7-5 14-2.5-5.5z',
     stop: 'M7 7h10v10H7z',
+    copy: 'M9 9h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V10a1 1 0 0 1 1-1zM16 9V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3',
     target: 'M12 3v3M12 18v3M3 12h3M18 12h3M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z',
     chevron: 'M9 6l6 6-6 6',
     'chevron-down': 'M6 9l6 6 6-6',
