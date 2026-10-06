@@ -6,6 +6,7 @@
     | 'search'
     | 'trash'
     | 'edit'
+    | 'tree'
     | 'external'
     | 'file'
     | 'link'
@@ -22,6 +23,10 @@
     | 'chevron'
     | 'back'
     | 'chevron-down'
+    | 'history'
+    | 'send'
+    | 'stop'
+    | 'target'
 </script>
 
 <script lang="ts">
@@ -29,6 +34,10 @@
   let { name, size = 16 }: { name: IconName; size?: number } = $props()
 
   const paths: Record<IconName, string> = {
+    history: 'M4 12a8 8 0 1 0 2.3-5.7M4 5v4h4M12 8v4l3 2',
+    send: 'M5 12l14-7-5 14-2.5-5.5z',
+    stop: 'M7 7h10v10H7z',
+    target: 'M12 3v3M12 18v3M3 12h3M18 12h3M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z',
     chevron: 'M9 6l6 6-6 6',
     'chevron-down': 'M6 9l6 6 6-6',
     back: 'M15 6l-6 6 6 6',
@@ -43,6 +52,7 @@
     close: 'M6 6l12 12M18 6L6 18',
     search: 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4',
     edit: 'M4 20h4L19 9l-4-4L4 16zM13 7l4 4',
+    tree: 'M5 6h14M9 12h10M13 18h6M5 12h.01M9 18h.01',
     trash: 'M4 7h16M10 11v6M14 11v6M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12M9 7V4h6v3',
     external: 'M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5',
     file: 'M7 3h7l5 5v12a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM14 3v5h5',

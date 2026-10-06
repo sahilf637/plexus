@@ -147,8 +147,13 @@ Three layers: **Items ↔ Concepts ↔ Topics.**
   rolled up to the item.
 - **Concepts:** a small, deduplicated vocabulary extracted by the LLM ("LLM", "LLMs" and "large
   language models" are one concept, with aliases).
-- **Topics:** hierarchical clusters (Leiden/Louvain on the similarity graph), named by the LLM.
-  Cluster ids stay stable across re-clustering by matching on member overlap.
+- **Topics:** a variable-depth tree of clusters (Louvain on a graph of links, concepts and
+  nearest neighbours, at a low resolution for the top level and a higher one to split big groups),
+  built locally and named locally from the notes' own words, with the top two levels renamed by the
+  LLM when one is connected (it only names, never decides membership). A new item joins the topic
+  most of its links are in; the tree is rebuilt only when the library has grown a good deal, and
+  topic ids, names and places carry over by matching on member overlap. A name you set is kept.
+  See [plans/M3.md](plans/M3.md).
 
 **Tiers:** every link found by meaning has a tier saying how sure it is: `strong` (≥ 0.72
 similarity, up to 5 per item), `related` (≥ 0.67, up to 3) and `maybe` (≥ 0.62, up to 3). An item
@@ -178,7 +183,8 @@ items(id, path, kind, title, source_url, captured_at, body_hash, asset_path, ass
 chunks(id, item_id, ord, text)              vec_chunks (sqlite-vec)   fts (FTS5)
 concepts(id, name, aliases, summary)        item_concepts(item_id, concept_id, weight)
 edges(src, dst, kind, weight, reason, confidence, provenance, status, pipeline_version)
-topics(id, parent_id, level, label, summary)  topic_members(topic_id, item_id)
+topics(id, parent_id, level, label, label_by, summary, named_members, centroid)
+topic_members(item_id, topic_id)            -- the lowest topic only; ancestors follow parent_id
 layout(node_id, level, x, y)
 ```
 
@@ -203,17 +209,36 @@ A Claude-Code-style loop over the knowledge base rather than single-shot RAG.
 
 | Tool | Purpose |
 |---|---|
-| `search(query, mode, scope)` | Hybrid / semantic / keyword search |
-| `grep(pattern)` | Exact or regex match over raw text |
+| `search(query, mode, scope)` | Hybrid / semantic / keyword / exact (literal or regex), in the whole library or one topic |
 | `read(item, offset, limit)` | Paged reading of an item |
-| `neighbors(item, edge_types, depth)` | Walk the graph |
-| `topic_overview(topic)` / `list_members(topic)` | Browse the hierarchy |
-| `spawn_subagent(question, scope)` | Fan out per topic, then combine |
-| `notes(...)` | Working memory across steps |
+| `neighbors(item, depth)` | Walk the graph, with each link's reason |
+| `topics(topic?)` | Browse the hierarchy: top level, or one topic's summary, sub-topics and members |
+| `answer(text, sources, effort)` | Ends the run |
 
-It plans sub-questions, iterates within a token/step budget, answers with numbered citations,
-and says when the collection doesn't cover something. **The agent's path is shown live on the
-map**: items light up as it reads them.
+How a question runs (details in [plans/M4.md](plans/M4.md)):
+
+- **Retrieve first.** Local hybrid search gives the model about ten candidate cards before its
+  first call, so easy questions are answered in one or two calls; the loop only runs for harder
+  ones. Each turn the model returns one JSON step (a tool, or the answer), which works the same on
+  every provider.
+- **Effort sets the budget.** The first step says `lookup`, `explain` or `survey`: about 3, 8 or 12
+  tool steps, a token budget, and an answer length to match (a sentence or two for a lookup, never
+  more than about 1,500 tokens). A question that runs out of steps ends as a partial answer.
+- **Short names, capped results.** Notes are `n1`, `n2`…, topics `t1`…; a name not shown is refused.
+  Results are capped at about 1,500 tokens and fenced as data. Notes that look like secrets are
+  invisible. The agent is read-only.
+- **Citations that are checked.** A source is `{n, item, quote}`; it stands only if the note was
+  shown and the quote really occurs in it. Others are dropped (and the rest renumbered); an answer
+  whose sources all fail is marked unsupported, while one that cites nothing because the notes
+  don't cover the question is not.
+- **Errors.** A bad step is retried once; a provider error keeps the run so it can be resumed;
+  stopping keeps what was found. Asks have their own daily limit (Settings → AI).
+- **On the map** the agent's path shows only while the Ask panel is showing and the window is in
+  front, and it steps aside whenever you use the map: faint rings on the notes it was shown, a
+  line through the ones it read, a pulse on the latest step, and a ring on each cited note. A
+  "Follow" toggle eases the view to the latest note when it is out of sight (never while you are
+  using the map).
+- **Without an AI provider** Ask shows what search finds, with a prompt to connect one.
 
 ## 7. Big graphs
 
@@ -226,8 +251,9 @@ map**: items light up as it reads them.
 - **Zoom:** scrolling or pinching zooms around the cursor and eases smoothly; zooming out stops a
   little past the whole map. Two fingers sliding up zoom in; Settings → General → Map switches to
   the mouse-wheel direction.
-- **Understanding:** semantic zoom. Zoomed out shows ~10–20 named topics sized by content; zooming
-  in reveals sub-topics, then items. Focus mode shows one item's 1–2 hop neighborhood. Each item
+- **Understanding:** semantic zoom. Zoomed out shows the top-level topics as soft shaded regions
+  with names; zooming in, a topic gives way to its sub-topics, then to the items (their own labels
+  are hidden while topic names are showing). Clicking a name zooms to it and opens its panel. Focus mode shows one item's 1–2 hop neighborhood. Each item
   keeps only its top 3–5 edges by default; weak similarity edges are hidden; filters by time,
   source, type and concept.
 - **Data:** the UI requests slices by zoom level and viewport, so the full graph is never loaded at
@@ -249,8 +275,8 @@ map**: items light up as it reads them.
 | **M0** | Scaffold; hotkey + capture window; note files + index; text/code/URL captured fully, images/files stored raw; secret detection; duplicates; local embeddings; similarity edges; Sigma map. Fully offline. See [plans/M0.md](plans/M0.md). |
 | **M1** | Curate and extract. Delete items (trash with undo); plain-language link reasons and clearer strength; hand-made links. Extractors: plain-text files (`.md`, `.txt`, code files) read as text, rich HTML → markdown, images (local PaddleOCR PP-OCRv6 small, ~30 MB, swappable for a provider's vision later), PDF/DOCX/EPUB text; clipboard watching (opt-in). Until an item has text it links by name only, capped at `maybe`. No accept/reject flow. See [plans/M1.md](plans/M1.md). |
 | **M2** | LLM enrichment of new items: titles (marked AI, revertible), summaries, concepts, typed edges with reasons, image descriptions. OpenAI-compatible, Anthropic and Gemini providers; keys in the system keychain. See [plans/M2.md](plans/M2.md). |
-| **M3** | Topics: hierarchical clustering, names, semantic zoom, stable layout. |
-| **M4** | Ask agent with graph tools, citations and live path on the map. |
+| **M3** | Topics: a variable-depth tree built locally by graph clustering, named locally (better with AI), shown as regions that appear with zoom, kept stable as the library grows; plus the slow, capped "improve older notes" pass. See [plans/M3.md](plans/M3.md). |
+| **M4** | Ask: an agent with five small tools, checked citations (the quote must really be in the note), effort-sized answers and its path shown live on the map. See [plans/M4.md](plans/M4.md). |
 | **M5** | Scale: viewport slicing, incremental layout; imports (Obsidian, Notion, bookmarks); MCP server. |
 
 ## Open decisions

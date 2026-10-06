@@ -11,6 +11,7 @@ use crate::pipeline::Pipeline;
 use crate::settings::SettingsStore;
 
 pub struct AppState {
+    pub topics: crate::topics::Topics,
     pub settings: SettingsStore,
     pub hotkey: Hotkey,
     pub library: Library,
@@ -19,6 +20,7 @@ pub struct AppState {
     pub fetcher: Fetcher,
     pub extractor: Extractor,
     pub enricher: Enricher,
+    pub asker: crate::ask::session::Asker,
 }
 
 impl AppState {

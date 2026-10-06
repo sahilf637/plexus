@@ -3,7 +3,8 @@
 
 use std::collections::HashMap;
 
-use crate::db::{chunks, graph};
+use crate::db::{Db, chunks, graph};
+use crate::pipeline::embed::Embedder;
 use crate::error::Result;
 use crate::state::AppState;
 
@@ -14,21 +15,33 @@ const NEIGHBOURS: usize = 60;
 const RRF_K: f64 = 60.0;
 
 pub fn hybrid(state: &AppState, query: &str, limit: usize) -> Result<Vec<String>> {
-    let by_words = state.db.with(|conn| graph::search(conn, query, limit))?;
-    let by_meaning = match state.pipeline.embedder.available() && !query.trim().is_empty() {
-        true => {
-            let vector = state.pipeline.embedder.embed_query(query.trim())?;
-            let neighbours = state.db.with(|conn| chunks::nearest(conn, &vector, NEIGHBOURS))?;
-            let mut best: Vec<(String, f32)> = chunks::best_per_item(neighbours, "")
-                .into_iter()
-                .filter(|(_, similarity)| *similarity >= MEANING_THRESHOLD)
-                .collect();
-            best.sort_by(|a, b| b.1.total_cmp(&a.1));
-            best.into_iter().map(|(id, _)| id).collect()
-        }
-        false => Vec::new(),
-    };
+    hybrid_with(&state.db, &state.pipeline.embedder, query, limit)
+}
+
+/// Items whose text is close in meaning to the query, closest first (none if the embedding model
+/// isn't available or the query is empty).
+pub fn semantic(state: &AppState, query: &str) -> Result<Vec<String>> {
+    semantic_with(&state.db, &state.pipeline.embedder, query)
+}
+
+pub fn hybrid_with(db: &Db, embedder: &Embedder, query: &str, limit: usize) -> Result<Vec<String>> {
+    let by_words = db.with(|conn| graph::search(conn, query, limit))?;
+    let by_meaning = semantic_with(db, embedder, query)?;
     Ok(fuse(&[by_words, by_meaning], limit))
+}
+
+pub fn semantic_with(db: &Db, embedder: &Embedder, query: &str) -> Result<Vec<String>> {
+    if !embedder.available() || query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let vector = embedder.embed_query(query.trim())?;
+    let neighbours = db.with(|conn| chunks::nearest(conn, &vector, NEIGHBOURS))?;
+    let mut best: Vec<(String, f32)> = chunks::best_per_item(neighbours, "")
+        .into_iter()
+        .filter(|(_, similarity)| *similarity >= MEANING_THRESHOLD)
+        .collect();
+    best.sort_by(|a, b| b.1.total_cmp(&a.1));
+    Ok(best.into_iter().map(|(id, _)| id).collect())
 }
 
 /// Items found by both lists rise to the top; each list contributes 1 / (k + rank).

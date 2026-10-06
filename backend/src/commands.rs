@@ -124,6 +124,55 @@ pub fn remove_ai_link(app: AppHandle, state: State<'_, AppState>, a: String, b: 
     announce_links(&app, [&a, &b], Vec::new(), &state)
 }
 
+/// The topic tree and each item's topic, as of now.
+#[tauri::command]
+pub fn get_topics(state: State<'_, AppState>) -> Result<crate::topics::TopicsData> {
+    state.db.with(|conn| crate::topics::data(conn))
+}
+
+/// Names a topic yourself; it is then never renamed.
+#[tauri::command]
+pub fn rename_topic(app: AppHandle, state: State<'_, AppState>, id: String, name: String) -> Result<()> {
+    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name.is_empty() || name.chars().count() > 60 {
+        return Err(Error::Invalid("a topic name needs 1 to 60 characters".into()));
+    }
+    let found = state.db.with(|conn| {
+        let Some(topic) = crate::db::topics::get(conn, &id)? else { return Ok(false) };
+        crate::db::topics::set_label(conn, &id, &name, crate::db::topics::LabelBy::You, topic.summary.as_deref(), None)?;
+        Ok(true)
+    })?;
+    if found {
+        crate::topics::announce(&app, &state);
+    }
+    Ok(())
+}
+
+/// Goes back to the name Plexus made (a new one is worked out in the background).
+#[tauri::command]
+pub fn reset_topic_name(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<()> {
+    state.db.with(|conn| {
+        if let Some(topic) = crate::db::topics::get(conn, &id)? {
+            crate::db::topics::set_label(conn, &id, &topic.label, crate::db::topics::LabelBy::Auto, None, None)?;
+        }
+        Ok(())
+    })?;
+    crate::topics::schedule_now(&app);
+    Ok(())
+}
+
+/// Builds the topics again now, instead of waiting for the library to grow.
+#[tauri::command]
+pub fn regroup_topics(app: AppHandle) {
+    crate::topics::schedule_now(&app);
+}
+
+/// How the slow pass over older notes is going.
+#[tauri::command]
+pub fn older_status(state: State<'_, AppState>) -> Result<enrich::older::Progress> {
+    state.db.with(|conn| enrich::older::progress(conn))
+}
+
 #[tauri::command]
 pub fn hotkey_status(state: State<'_, AppState>) -> hotkey::HotkeyStatus {
     state.hotkey.status()
@@ -316,6 +365,7 @@ pub struct MapData {
     edges: Vec<graph::Edge>,
     positions: Vec<graph::Position>,
     concepts: Vec<concepts::ConceptItems>,
+    topics: crate::topics::TopicsData,
 }
 
 #[tauri::command]
@@ -326,6 +376,7 @@ pub fn get_map(state: State<'_, AppState>) -> Result<MapData> {
             edges: graph::edges(conn)?,
             positions: graph::positions(conn)?,
             concepts: concepts::with_items(conn)?,
+            topics: crate::topics::data(conn)?,
         })
     })
 }
@@ -376,6 +427,7 @@ pub fn open_source(app: AppHandle, state: State<'_, AppState>, id: String) -> Re
 pub fn delete_items(app: AppHandle, state: State<'_, AppState>, ids: Vec<String>) -> Result<trash::Deleted> {
     let deleted = trash::delete_items(&state.library, &state.db, &ids)?;
     if !deleted.ids.is_empty() {
+        crate::topics::forget(&state);
         let _ = app.emit("items-deleted", &deleted.ids);
     }
     Ok(deleted)
@@ -438,4 +490,48 @@ fn timed<T>(what: &str, save: impl FnOnce() -> Result<T>) -> Result<T> {
     let result = save();
     tracing::debug!(what, elapsed = ?started.elapsed(), ok = result.is_ok(), "capture saved");
     result
+}
+
+// --- Ask --------------------------------------------------------------------------------
+
+/// Starts a question about the library (or about one topic or note). Returns it at once; the
+/// answer arrives as `ask-done` once the agent has worked through it.
+#[tauri::command]
+pub fn ask_start(app: AppHandle, state: State<'_, AppState>, question: String, scope: Option<String>) -> Result<crate::db::asks::Ask> {
+    let ai = state.settings.get().ai;
+    // Fails early, with a plain message, when there is no connection to ask through.
+    enrich::config_for(&ai).map_err(|_| Error::Invalid("Connect an AI in Settings to get written answers.".into()))?;
+    let finder = crate::ask::tools::AppFinder(&state);
+    let id = state.asker.begin(&state.db, &finder, &question, scope.as_deref(), ai.ask_per_day)?;
+    crate::ask::spawn(&app, id.clone());
+    state.db.with(|conn| crate::db::asks::get(conn, &id))?.ok_or_else(|| Error::Invalid("the question wasn't saved".into()))
+}
+
+/// Stops a question that is going; it ends with what it has found so far.
+#[tauri::command]
+pub fn ask_stop(state: State<'_, AppState>, id: String) {
+    state.asker.stop(&id);
+}
+
+/// Goes on with a question that a provider error stopped.
+#[tauri::command]
+pub fn ask_resume(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<()> {
+    if !state.asker.can_resume(&id) {
+        return Err(Error::Invalid("That question can't be continued; ask it again.".into()));
+    }
+    crate::ask::spawn(&app, id);
+    Ok(())
+}
+
+/// Past questions with their answers, newest first.
+#[tauri::command]
+pub fn ask_history(state: State<'_, AppState>) -> Result<Vec<crate::db::asks::Ask>> {
+    state.db.with(|conn| crate::db::asks::recent(conn, 100))
+}
+
+#[tauri::command]
+pub fn ask_delete(state: State<'_, AppState>, id: String) -> Result<()> {
+    state.asker.stop(&id);
+    state.asker.forget(&id);
+    state.db.with(|conn| crate::db::asks::delete(conn, &id))
 }

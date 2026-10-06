@@ -120,8 +120,51 @@ pub fn pending_ids(conn: &Connection) -> Result<Vec<String>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-fn to_blob(vector: &[f32]) -> Vec<u8> {
+pub(crate) fn to_blob(vector: &[f32]) -> Vec<u8> {
     vector.iter().flat_map(|x| x.to_le_bytes()).collect()
+}
+
+pub(crate) fn from_blob(blob: &[u8]) -> Vec<f32> {
+    blob.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect()
+}
+
+/// One vector standing for a whole item: the mean of its chunks' vectors, scaled to length 1.
+fn mean_unit(vectors: impl IntoIterator<Item = Vec<f32>>) -> Option<Vec<f32>> {
+    let mut sum: Vec<f32> = Vec::new();
+    let mut count = 0;
+    for vector in vectors {
+        if sum.is_empty() {
+            sum = vec![0.0; vector.len()];
+        }
+        if vector.len() != sum.len() {
+            continue;
+        }
+        sum.iter_mut().zip(&vector).for_each(|(s, v)| *s += v);
+        count += 1;
+    }
+    if count == 0 {
+        return None;
+    }
+    let norm = sum.iter().map(|x| x * x).sum::<f32>().sqrt();
+    (norm > 0.0).then(|| sum.iter().map(|x| x / norm).collect())
+}
+
+/// The vector standing for one item (see [`mean_unit`]), if it has been embedded.
+pub fn item_vector(conn: &Connection, item_id: &str) -> Result<Option<Vec<f32>>> {
+    let mut stmt = conn.prepare("SELECT v.embedding FROM chunks c JOIN vec_chunks v ON v.rowid = c.id WHERE c.item_id = ?1")?;
+    let blobs: Vec<Vec<u8>> = stmt.query_map([item_id], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
+    Ok(mean_unit(blobs.iter().map(|b| from_blob(b))))
+}
+
+/// The vector standing for each embedded item.
+pub fn item_vectors(conn: &Connection) -> Result<HashMap<String, Vec<f32>>> {
+    let mut stmt = conn.prepare("SELECT c.item_id, v.embedding FROM chunks c JOIN vec_chunks v ON v.rowid = c.id ORDER BY c.item_id")?;
+    let rows: Vec<(String, Vec<u8>)> = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+    let mut by_item: HashMap<String, Vec<Vec<f32>>> = HashMap::new();
+    for (id, blob) in rows {
+        by_item.entry(id).or_default().push(from_blob(&blob));
+    }
+    Ok(by_item.into_iter().filter_map(|(id, vectors)| Some((id, mean_unit(vectors)?))).collect())
 }
 
 #[cfg(test)]

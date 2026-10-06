@@ -35,7 +35,20 @@ const items = db
 const edges = db.prepare("SELECT src, dst, kind, weight, tier, reason FROM edges WHERE status != 'rejected'").all()
 const positions = db.prepare('SELECT item_id AS id, x, y FROM layout').all()
 
+// Topics, if the index has them (built by the app, or `index_seed` in the backend tests).
+let topics = { topics: [], itemTopic: {} }
+try {
+  const rows = db.prepare('SELECT id, parent_id AS parentId, level, label, label_by AS labelBy, summary FROM topics ORDER BY level, id').all()
+  const itemTopic = Object.fromEntries(db.prepare('SELECT item_id, topic_id FROM topic_members').all().map((r) => [r.item_id, r.topic_id]))
+  const parent = new Map(rows.map((t) => [t.id, t.parentId]))
+  const counts = new Map(rows.map((t) => [t.id, 0]))
+  for (const leaf of Object.values(itemTopic)) for (let at = leaf; at; at = parent.get(at)) counts.set(at, (counts.get(at) ?? 0) + 1)
+  topics = { topics: rows.map((t) => ({ ...t, count: counts.get(t.id) ?? 0 })).filter((t) => t.count > 0), itemTopic }
+} catch {
+  // An index from before topics existed.
+}
+
 const out = resolve(import.meta.dirname, '..', 'frontend', 'public', 'map.local.json')
 mkdirSync(resolve(out, '..'), { recursive: true })
-writeFileSync(out, JSON.stringify({ items, edges, positions }))
-console.log(`Exported ${items.length} items and ${edges.length} links to ${out}`)
+writeFileSync(out, JSON.stringify({ items, edges, positions, concepts: [], topics }))
+console.log(`Exported ${items.length} items, ${edges.length} links and ${topics.topics.length} topics to ${out}`)

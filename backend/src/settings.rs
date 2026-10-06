@@ -41,6 +41,12 @@ pub struct AiSettings {
     pub active: String,
     /// Most calls per day; 0 means no limit.
     pub daily_limit: u32,
+    /// Most questions asked of the library per day (Ask); 0 means no limit.
+    pub ask_per_day: u32,
+    /// Slowly enrich the notes saved before AI was switched on, a few a day.
+    pub improve_old: bool,
+    /// Most older notes improved per day; 0 means only the daily call limit applies.
+    pub improve_per_day: u32,
 }
 
 /// One provider, model and key (the key itself is in the keychain).
@@ -62,7 +68,15 @@ pub struct AiConnection {
 
 impl Default for AiSettings {
     fn default() -> Self {
-        Self { enabled: false, connections: Vec::new(), active: String::new(), daily_limit: 500 }
+        Self {
+            enabled: false,
+            connections: Vec::new(),
+            active: String::new(),
+            daily_limit: 500,
+            ask_per_day: 20,
+            improve_old: false,
+            improve_per_day: 10,
+        }
     }
 }
 
@@ -96,6 +110,9 @@ struct RawAi {
     connections: Vec<AiConnection>,
     active: String,
     daily_limit: Option<u32>,
+    ask_per_day: Option<u32>,
+    improve_old: bool,
+    improve_per_day: Option<u32>,
     preset: Option<String>,
     kind: Option<ProviderKind>,
     base_url: Option<String>,
@@ -110,6 +127,9 @@ impl From<RawAi> for AiSettings {
             connections: raw.connections,
             active: raw.active,
             daily_limit: raw.daily_limit.unwrap_or(AiSettings::default().daily_limit),
+            ask_per_day: raw.ask_per_day.unwrap_or(AiSettings::default().ask_per_day),
+            improve_old: raw.improve_old,
+            improve_per_day: raw.improve_per_day.unwrap_or(AiSettings::default().improve_per_day),
         };
         // An earlier version had one provider. It becomes a connection named after its preset, so
         // the key already in the keychain (stored under the preset's name) keeps working.

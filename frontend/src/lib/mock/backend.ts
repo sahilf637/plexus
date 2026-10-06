@@ -1,7 +1,7 @@
 // In-memory stand-in for the Rust backend, used by `npm run dev:ui`. Detection here is a rough
 // approximation, good enough to exercise the UI; the real rules live in Rust.
 
-import type { AiConnection, AiKeyStatus, ModelInfo, CaptureResult, Concept, ConceptItems, Deleted, Edge, EnrichStatus, HotkeyStatus, Item, ItemDetail, ItemLinked, Kind, MapData, Position, Preview, Settings, Tier } from '../types'
+import type { Ask, AskFailed, AskStep, AiConnection, AiKeyStatus, ModelInfo, CaptureResult, Concept, ConceptItems, Deleted, Edge, EnrichStatus, HotkeyStatus, Item, ItemDetail, ItemLinked, ItemTopic, Kind, MapData, OlderProgress, Position, Preview, Settings, Tier, Topic, TopicsData } from '../types'
 import { sampleConcepts, sampleItems } from './samples'
 
 let settings: Settings = {
@@ -11,7 +11,7 @@ let settings: Settings = {
   startAtLogin: true,
   fetchLinks: true,
   watchClipboard: false,
-  ai: { enabled: false, connections: [], active: '', dailyLimit: 500 },
+  ai: { enabled: false, connections: [], active: '', dailyLimit: 500, askPerDay: 20, improveOld: false, improvePerDay: 10 },
 }
 
 // The keychain, the AI queue and what the AI said (concepts and typed links), simulated.
@@ -48,6 +48,7 @@ async function loadExported(url: string): Promise<MapData> {
   const data: MapData & { items: ItemDetail[] } = await (await fetch(url)).json()
   items.splice(0, items.length, ...data.items)
   data.positions.forEach((p) => positions.set(p.id, p))
+  if (data.topics?.topics.length) topicsData = data.topics
   return data
 }
 
@@ -140,10 +141,53 @@ function addItem(title: string, kind: Kind, body: string): CaptureResult {
     const edges = linksFor(item)
     const related = edges.map((e) => ({ id: e.dst, title: items.find((i) => i.id === e.dst)!.title, weight: e.weight, tier: e.tier }))
     emit('item-linked', { id: item.id, status: 'linked', edges, related } satisfies ItemLinked)
+    joinTopic(item.id, related[0]?.id)
     enrich(item, related[0]?.id)
   }, readDelay + 500)
   return { status: 'saved', id: item.id, title, kind }
 }
+
+// Topics: a small tree for the samples (or the exported library's own), kept up to date as
+// items are added. New items join the topic of the item they link to, else Loose notes.
+let topicsData: TopicsData = sampleTopics()
+function sampleTopics(): TopicsData {
+  const t = (id: string, parentId: string | null, level: number, label: string, count: number): Topic => ({ id, parentId, level, label, labelBy: 'auto', summary: null, count })
+  const itemTopic: Record<string, string> = {}
+  const place = (topic: string, ...indexes: number[]) => indexes.forEach((i) => (itemTopic[`sample-${i}`] = topic))
+  place('rust', 0, 1, 2)
+  place('bread', 3, 4)
+  place('memory', 8, 9)
+  place('loose', 5, 6, 7)
+  return {
+    topics: [
+      t('code', null, 0, 'Programming', 3),
+      t('rust', 'code', 1, 'Rust ownership', 3),
+      t('food', null, 0, 'Food', 2),
+      t('bread', 'food', 1, 'Sourdough & bread', 2),
+      t('learn', null, 0, 'Learning', 2),
+      t('memory', 'learn', 1, 'Memory', 2),
+      t('loose', null, 0, 'Loose notes', 3),
+    ],
+    itemTopic,
+  }
+}
+const recount = () => {
+  const parent = new Map(topicsData.topics.map((t) => [t.id, t.parentId]))
+  const counts = new Map<string, number>()
+  for (const leaf of Object.values(topicsData.itemTopic)) for (let at: string | null | undefined = leaf; at; at = parent.get(at)) counts.set(at, (counts.get(at) ?? 0) + 1)
+  topicsData = { ...topicsData, topics: topicsData.topics.map((t) => ({ ...t, count: counts.get(t.id) ?? 0 })) }
+}
+/** A new item joins the topic of its closest link, else Loose notes. */
+function joinTopic(id: string, closest?: string) {
+  const topic = (closest && topicsData.itemTopic[closest]) || 'loose'
+  if (topic === 'loose' && !topicsData.topics.some((t) => t.id === 'loose'))
+    topicsData.topics.push({ id: 'loose', parentId: null, level: 0, label: 'Loose notes', labelBy: 'auto', summary: null, count: 0 })
+  topicsData.itemTopic[id] = topic
+  recount()
+  emit('item-topic', { id, topicId: topic } satisfies ItemTopic)
+}
+let olderDone = 0
+let olderTimer: ReturnType<typeof setInterval> | undefined
 
 const conceptIndex = (): ConceptItems[] => {
   const byId = new Map<number, ConceptItems>()
@@ -227,6 +271,12 @@ const commands: Record<string, Command> = {
     // A removed connection takes its key with it.
     for (const gone of previous.ai.connections) if (!connectionOf(gone.id)) keys.delete(gone.id)
     if (!settings.ai.enabled) setStatus({ state: 'off', pending: 0, message: null })
+    // The slow pass over older notes, sped up: one every few seconds, up to the day's number.
+    clearInterval(olderTimer)
+    if (settings.ai.enabled && settings.ai.improveOld)
+      olderTimer = setInterval(() => {
+        if (olderDone < 38 && (settings.ai.improvePerDay === 0 || olderDone < settings.ai.improvePerDay)) olderDone++
+      }, 4000)
     return settings
   },
   ai_key_status: (args): AiKeyStatus => ({ hasKey: keys.has(String(args.id)), error: null }),
@@ -311,7 +361,7 @@ const commands: Record<string, Command> = {
   list_items: (): Item[] => items,
   get_map: async (): Promise<MapData> => {
     if (mapUrl) exported ??= await loadExported(mapUrl)
-    return { items, edges: merged(), positions: [...positions.values()], concepts: conceptIndex() }
+    return { items, edges: merged(), positions: [...positions.values()], concepts: conceptIndex(), topics: topicsData }
   },
   save_layout: (args) => (args.positions as Position[]).forEach((p) => positions.set(p.id, p)),
   search: (args) => {
@@ -339,7 +389,11 @@ const commands: Record<string, Command> = {
     const batch = crypto.randomUUID().replace(/-/g, '').toUpperCase()
     trash.set(batch, { items: items.filter((i) => ids.includes(i.id)) })
     for (const id of ids) items.splice(items.findIndex((i) => i.id === id), 1)
-    if (ids.length) emit('items-deleted', ids)
+    if (ids.length) {
+      for (const id of ids) delete topicsData.itemTopic[id]
+      recount()
+      emit('items-deleted', ids)
+    }
     return { batch, ids }
   },
   restore_items: (args): number => {
@@ -353,6 +407,47 @@ const commands: Record<string, Command> = {
     }
     return batch.items.length
   },
+  get_topics: (): TopicsData => topicsData,
+  rename_topic: (args) => {
+    const name = String(args.name).trim()
+    if (!name || name.length > 60) throw new Error('a topic name needs 1 to 60 characters')
+    topicsData = { ...topicsData, topics: topicsData.topics.map((t) => (t.id === args.id ? { ...t, label: name, labelBy: 'you' } : t)) }
+    emit('topics-changed', topicsData)
+  },
+  reset_topic_name: (args) => {
+    topicsData = { ...topicsData, topics: topicsData.topics.map((t) => (t.id === args.id ? { ...t, labelBy: 'auto' } : t)) }
+    emit('topics-changed', topicsData)
+  },
+  regroup_topics: () => emit('topics-changed', topicsData),
+  ask_start: (args): Ask => {
+    if (!settings.ai.connections.length) throw new Error('Connect an AI in Settings to get written answers.')
+    const ask: Ask = {
+      id: `ask${asks.length + 1}-${Date.now()}`,
+      scope: args.scope ? String(args.scope) : null,
+      question: String(args.question).trim(),
+      answer: '',
+      effort: 'explain',
+      state: 'running',
+      unsupported: false,
+      createdAt: new Date().toISOString(),
+      sources: [],
+    }
+    if (!ask.question) throw new Error('Ask something first.')
+    asks.unshift(ask)
+    stopped.delete(ask.id)
+    void playAsk(ask)
+    return { ...ask }
+  },
+  ask_stop: (args) => void stopped.add(String(args.id)),
+  ask_resume: () => {
+    throw new Error("That question can't be continued; ask it again.")
+  },
+  ask_history: (): Ask[] => asks.map((a) => ({ ...a })),
+  ask_delete: (args) => {
+    const at = asks.findIndex((a) => a.id === args.id)
+    if (at >= 0) asks.splice(at, 1)
+  },
+  older_status: (): OlderProgress => ({ done: olderDone, total: 38, today: Math.min(olderDone, settings.ai.improvePerDay) }),
   open_item_file: () => {},
   open_source: (args) => void window.open(items.find((i) => i.id === args.id)?.sourceUrl ?? '', '_blank'),
   get_item: (args): ItemDetail => {
@@ -360,6 +455,46 @@ const commands: Record<string, Command> = {
     if (!item) throw new Error(`no item ${args.id}`)
     return item
   },
+}
+
+const asks: Ask[] = []
+const stopped = new Set<string>()
+
+/** Stand-in for the agent: looks for the question's words, "reads" the best note and answers with
+ * a sentence from it, one step at a time so the UI shows the same events as the real thing. */
+async function playAsk(ask: Ask) {
+  const pause = (ms: number) => new Promise((done) => setTimeout(done, ms))
+  const words = ask.question.toLowerCase().split(/\W+/).filter((w) => w.length > 3)
+  const scored = items
+    .map((i) => ({ item: i, score: words.filter((w) => `${i.title} ${i.body}`.toLowerCase().includes(w)).length }))
+    .filter((s) => s.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .map((s) => s.item)
+  const step = (n: number, tool: AskStep['tool'], label: string, ids: string[]) =>
+    emit('ask-step', { askId: ask.id, n, tool, label, items: ids } satisfies AskStep)
+  const finish = (patch: Partial<Ask>) => {
+    Object.assign(ask, patch)
+    emit('ask-done', { ...ask })
+  }
+  await pause(500)
+  if (stopped.has(ask.id)) return finish({ state: 'stopped', answer: 'Stopped before anything was found.' })
+  step(1, 'search', `searched for "${words.slice(0, 3).join(' ') || ask.question}"`, scored.slice(0, 5).map((i) => i.id))
+  if (!scored.length) {
+    await pause(500)
+    return finish({ state: 'done', effort: 'lookup', answer: "Your notes don't cover this." })
+  }
+  await pause(700)
+  if (stopped.has(ask.id)) return finish({ state: 'stopped', answer: `So far I found "${scored[0].title}".` })
+  step(2, 'read', `read ${scored[0].title}`, [scored[0].id])
+  await pause(800)
+  if (stopped.has(ask.id)) return finish({ state: 'stopped', answer: `So far I found "${scored[0].title}".` })
+  const sentence = scored[0].body.split(/(?<=[.!?])\s/)[0]?.trim() ?? scored[0].title
+  finish({
+    state: 'done',
+    effort: 'lookup',
+    answer: `${sentence} [1]`,
+    sources: [{ n: 1, itemId: scored[0].id, quote: sentence.slice(0, 60) }],
+  })
 }
 
 export async function invoke<T>(

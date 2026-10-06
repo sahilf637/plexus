@@ -9,12 +9,16 @@ See [docs/OVERVIEW.md](docs/OVERVIEW.md) for the product and technical design.
 
 ## Status
 
-M0, M1 and M2 are done ([M0](docs/plans/M0.md), [M1](docs/plans/M1.md), [M2](docs/plans/M2.md)):
+M0 to M4 are done ([M0](docs/plans/M0.md), [M1](docs/plans/M1.md), [M2](docs/plans/M2.md), [M3](docs/plans/M3.md), [M4](docs/plans/M4.md)):
 capture, local linking with plain-language reasons, deleting with undo, hand-made links, text
 extraction (files, HTML, PDF/DOCX/EPUB, OCR), opt-in clipboard watching, and optional AI
 enrichment of new items (titles, summaries, concepts, typed links, image descriptions). Linking
 is fully automatic; the only thing a user removes is an AI link or an AI title (undo of an AI
-change). Next: M3 (topics).
+change). M3 adds topics: a tree of groups built locally from the links, named locally (better with
+AI), shown on the map as regions that change with the zoom, kept stable as the library grows, plus
+an optional slow pass that improves older notes. M4 adds Ask: a read-only agent that answers a
+question from the notes with five small tools, checked citations and its path shown on the map.
+Next: M5 (scale, imports, MCP).
 
 ## Principles
 
@@ -80,7 +84,8 @@ Svelte UI: capture window, graph map (Sigma.js), item reader, Ask agent
 frontend/              Svelte 5 + Vite; two entries: index.html (map), capture.html
   src/lib/api.ts       typed wrappers for Rust commands and events (the only place that calls Rust)
   src/lib/mock/        in-memory backend for `npm run dev:ui`
-  src/lib/graph/       Sigma setup, reducers, layout worker
+  src/lib/graph/       Sigma setup, reducers, layout worker, topic regions, the Ask agent's path (`path.ts`)
+  src/lib/ask.svelte.ts  Ask state shared by the panel and the map
   src/capture/         capture window
   src/components/      map UI components
 backend/               Tauri v2 crate `plexus`
@@ -89,7 +94,11 @@ backend/               Tauri v2 crate `plexus`
   src/capture/         kind detection, secrets, dedupe, hotkeys, clipboard
   src/pipeline/        background worker: chunk, embed, link, plain-language link reasons
   src/llm/             AI providers (OpenAI-compatible, Anthropic, Gemini), one blocking JSON call; keychain keys
-  src/enrich/          T2 queue and worker: bounded context, applying the answer, image descriptions
+  src/enrich/          T2 queue and worker: bounded context, applying the answer, image descriptions,
+                       the slow pass over older notes (`older.rs`)
+  src/topics/          topic tree: graph, clustering (Louvain), matching, names (local and AI)
+  src/ask/             the Ask agent: loop and budgets (`mod.rs`), prompt and step schema, the five tools
+                       (`tools.rs`), citation checking (`cite.rs`), running and resuming questions (`session.rs`)
   src/fetch/           URL fetching + article extraction
   src/extract/         text out of files and images (text, HTML, PDF, DOCX, EPUB, OCR) in the background
 docs/                  product and design docs; plans/ per milestone
@@ -108,7 +117,12 @@ These are hard rules, not guidelines.
 - Run secret detection (API keys, tokens, high-entropy strings) on every capture **before** it is
   stored or sent anywhere. Flag secrets and keep them out of AI calls.
 - The Ask agent works through tools that return compact results (ids, summaries, snippets) and
-  reads full text only when it chooses to, within a token/step budget.
+  reads full text only when it chooses to, within a token/step budget. It sees notes as `n1`, `n2`…
+  and topics as `t1`…, never real ids; a name it wasn't shown is refused. Tool results are capped
+  (about 1,500 tokens) and fenced as data, so text inside a note is never an instruction. It is
+  read-only and has no network. Notes that look like secrets are invisible to every tool.
+- An answer's sources stand only if the note was shown to the agent and the quote really occurs in
+  it; the rest are dropped with their `[n]` marks. Asks have their own daily limit (`ai.askPerDay`).
 
 ## Conventions
 
@@ -153,6 +167,10 @@ npm run seed -- /tmp/plexus-seed                    # ~230 notes across 15 topic
 PLEXUS_LIBRARY=/tmp/plexus-seed npm run dev         # run the app on it (env var overrides Settings)
 npm run export-map -- /tmp/plexus-seed              # its map, for `npm run dev:ui` at /?map=map.local.json
 cd backend && PLEXUS_SEED=/tmp/plexus-seed cargo test tune_links -- --ignored --nocapture   # link quality report
+cd backend && PLEXUS_SEED=/tmp/plexus-seed cargo test tune_topics -- --ignored --nocapture  # topic quality report
+# Ask quality, with a real provider (also PLEXUS_ASK_KEY, PLEXUS_ASK_KIND=anthropic|gemini):
+cd backend && PLEXUS_SEED=/tmp/plexus-seed PLEXUS_ASK_URL=https://api.openai.com/v1 PLEXUS_ASK_MODEL=gpt-4o-mini cargo test tune_ask -- --ignored --nocapture
+cd backend && PLEXUS_SEED=/tmp/plexus-seed cargo test index_seed -- --ignored --nocapture   # build its index, topics included
 ```
 
 `plexus --capture` opens the capture window (forwarded to the running instance);

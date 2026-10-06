@@ -6,6 +6,8 @@
     getSettings,
     hotkeyStatus,
     listAiModels,
+    olderStatus,
+    regroupTopics,
     setAiKey,
     setSettings,
     testAi,
@@ -14,7 +16,7 @@
   import { navigation, setNavigation } from '../lib/navigation.svelte'
   import Icon, { type IconName } from './Icon.svelte'
   import Select, { type Option } from './Select.svelte'
-  import type { AiConnection, AiKeyStatus, AiSettings, HotkeyStatus, ModelInfo, Settings } from '../lib/types'
+  import type { AiConnection, AiKeyStatus, AiSettings, HotkeyStatus, ModelInfo, OlderProgress, Settings } from '../lib/types'
 
   type Section = 'general' | 'capture' | 'ai' | 'library'
 
@@ -54,6 +56,34 @@
   let modelsState = $state<'idle' | 'loading' | 'failed'>('idle')
   let modelsError = $state('')
   let submit = $state<{ state: 'idle' | 'checking' | 'failed'; message: string }>({ state: 'idle', message: '' })
+
+  // The slow pass over older notes: how far it has got, refreshed while this section is open.
+  let older = $state<OlderProgress | null>(null)
+  let regrouping = $state(false)
+  const olderLine = $derived.by(() => {
+    if (!older) return ''
+    if (!older.total) return 'No older notes to improve'
+    const left = older.total - older.done
+    if (left <= 0) return `All ${older.total} older notes are done`
+    const perDay = settings?.ai.improvePerDay ?? 0
+    const days = perDay > 0 ? Math.ceil(left / perDay) : null
+    const rest = days === null ? '' : days === 1 ? ' · about a day left' : ` · about ${days} days left`
+    return `${older.done} of ${older.total} done${rest}`
+  })
+
+  $effect(() => {
+    if (section !== 'ai' || !settings?.ai.enabled || !settings.ai.improveOld) return
+    const refresh = () => olderStatus().then((p) => (older = p)).catch(() => {})
+    refresh()
+    const timer = setInterval(refresh, 5000)
+    return () => clearInterval(timer)
+  })
+
+  async function regroup() {
+    regrouping = true
+    await regroupTopics()
+    setTimeout(() => (regrouping = false), 4000)
+  }
 
   const connections = $derived(settings?.ai.connections ?? [])
   const preset = $derived(aiPresets.find((p) => p.id === presetId) ?? aiPresets[0])
@@ -488,8 +518,32 @@
                   <div class="label"><span>Daily limit</span></div>
                   <input class="input num" type="number" min="0" step="50" value={settings.ai.dailyLimit} aria-label="Daily limit" onchange={(e) => updateAi({ dailyLimit: Math.max(0, Math.floor(Number(e.currentTarget.value) || 0)) })} />
                 </div>
+                <div class="item" title="The most questions you can ask of your notes per day (each takes a few AI requests). 0 means no limit.">
+                  <div class="label"><span>Questions per day</span></div>
+                  <input class="input num" type="number" min="0" step="5" value={settings.ai.askPerDay} aria-label="Questions per day" onchange={(e) => updateAi({ askPerDay: Math.max(0, Math.floor(Number(e.currentTarget.value) || 0)) })} />
+                </div>
               </div>
               <p class="note">Tip: use a key with a spend limit, and only the permissions Plexus needs.</p>
+
+              <h4>Older notes</h4>
+              <div class="group">
+                <label class="item">
+                  <div class="label">
+                    <span>Improve older notes</span>
+                    <span class="desc">Slowly add titles, summaries and links to notes saved before AI was on</span>
+                  </div>
+                  <input type="checkbox" class="switch" checked={settings.ai.improveOld} onchange={(e) => updateAi({ improveOld: e.currentTarget.checked })} />
+                </label>
+                {#if settings.ai.improveOld}
+                  <div class="item" title="The most older notes improved per day, so it never uses up your AI limit. 0 means only the daily limit applies.">
+                    <div class="label">
+                      <span>Notes per day</span>
+                      {#if olderLine}<span class="desc">{olderLine}</span>{/if}
+                    </div>
+                    <input class="input num" type="number" min="0" max="1000" step="5" value={settings.ai.improvePerDay} aria-label="Older notes per day" onchange={(e) => updateAi({ improvePerDay: Math.max(0, Math.floor(Number(e.currentTarget.value) || 0)) })} />
+                  </div>
+                {/if}
+              </div>
             {/if}
           {:else}
             <h4>Folder</h4>
@@ -499,6 +553,17 @@
                   <span>Library folder</span>
                   <span class="desc path" title={settings.libraryPath}>{settings.libraryPath}</span>
                 </div>
+              </div>
+            </div>
+
+            <h4>Topics</h4>
+            <div class="group">
+              <div class="item">
+                <div class="label">
+                  <span>Regroup topics</span>
+                  <span class="desc">Plexus does this itself as the library grows. Names you gave are kept.</span>
+                </div>
+                <button class="btn" onclick={regroup} disabled={regrouping}>{regrouping ? 'Regrouping…' : 'Regroup'}</button>
               </div>
             </div>
           {/if}

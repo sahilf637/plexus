@@ -31,6 +31,12 @@ export interface AiSettings {
   active: string
   /** Most calls per day; 0 means no limit. */
   dailyLimit: number
+  /** Most questions asked of the library per day; 0 means no limit. */
+  askPerDay: number
+  /** Slowly improve the notes saved before AI was switched on, a few a day. */
+  improveOld: boolean
+  /** Most older notes improved per day; 0 means only the daily limit applies. */
+  improvePerDay: number
 }
 
 /** One provider, model and key. */
@@ -169,11 +175,51 @@ export interface Position {
   y: number
 }
 
+/** Who gave a topic its name: Plexus from the notes' words, the AI, or the user. */
+export type LabelBy = 'auto' | 'ai' | 'you'
+
+/** A group of items. Topics form a tree (top-level topics, sub-topics, …). */
+export interface Topic {
+  id: string
+  parentId: string | null
+  /** 0 for the top level. */
+  level: number
+  label: string
+  labelBy: LabelBy
+  /** One line about the topic, when the AI wrote one. */
+  summary: string | null
+  /** Items in it, counting those in its sub-topics. */
+  count: number
+}
+
+/** The topic tree and each item's lowest topic (its ancestors follow the parent chain). */
+export interface TopicsData {
+  topics: Topic[]
+  itemTopic: Record<string, string>
+}
+
+/** Sent when an item has joined a topic. */
+export interface ItemTopic {
+  id: string
+  topicId: string
+}
+
+/** How the slow pass over older notes is going. */
+export interface OlderProgress {
+  /** Older notes looked at so far. */
+  done: number
+  /** All older notes. */
+  total: number
+  /** Improved today. */
+  today: number
+}
+
 export interface MapData {
   items: Item[]
   edges: Edge[]
   positions: Position[]
   concepts: ConceptItems[]
+  topics: TopicsData
 }
 
 /** Items moved to the trash; `batch` restores them. */
@@ -196,4 +242,47 @@ export interface ItemLinked {
   edges: Edge[]
   /** Linked items, closest first. */
   related: { id: string; title: string; weight: number; tier: Tier }[]
+}
+
+/** How a question ended, or that it still is going. `partial`: out of steps, so the answer is the
+ * best so far. `failed`: a provider error; it may be resumable while the app stays open. */
+export type AskState = 'running' | 'done' | 'partial' | 'stopped' | 'failed'
+
+/** A note an answer rests on: `n` is the number its `[n]` marks in the text refer to. */
+export interface AskSource {
+  n: number
+  itemId: string
+  /** A phrase copied from the note, checked to really be there. */
+  quote: string
+}
+
+/** A question asked of the library, with its answer once there is one. */
+export interface Ask {
+  id: string
+  /** A topic or item id the question was limited to. */
+  scope: string | null
+  question: string
+  answer: string
+  effort: 'lookup' | 'explain' | 'survey'
+  state: AskState
+  /** It cited sources and none held up. */
+  unsupported: boolean
+  createdAt: string
+  sources: AskSource[]
+}
+
+/** One tool the agent ran, sent as it goes. `items` are the notes it touched. */
+export interface AskStep {
+  askId: string
+  n: number
+  tool: 'search' | 'read' | 'neighbors' | 'topics'
+  /** Plain words for what it did ("searched for \"borrowing\""). */
+  label: string
+  items: string[]
+}
+
+export interface AskFailed {
+  askId: string
+  message: string
+  canResume: boolean
 }

@@ -12,6 +12,7 @@
 
 pub mod apply;
 pub mod context;
+pub mod older;
 pub mod vision;
 
 use std::collections::{HashSet, VecDeque};
@@ -39,6 +40,8 @@ use apply::Answer;
 pub const VERSION: i64 = 1;
 /// `meta` key: when AI was switched on (RFC 3339). Items saved before it aren't enriched.
 const SINCE_KEY: &str = "ai_since";
+/// What the record of a skipped item holds in place of a content hash.
+const SKIPPED: &str = "skipped";
 /// Consecutive network failures before pausing.
 const MAX_FAILURES: u32 = 3;
 const NETWORK_PAUSE: Duration = Duration::from_secs(300);
@@ -50,7 +53,9 @@ const MAX_ANSWER_TOKENS: u32 = 700;
 pub enum Lane {
     /// Items just saved.
     New,
-    /// Catching up: runs only when `New` is empty.
+    /// Naming topics: runs when `New` is empty, before `Backfill`.
+    Topics,
+    /// Catching up (and the slow pass over older notes): runs only when the others are empty.
     Backfill,
 }
 
@@ -63,6 +68,7 @@ struct Pause {
 #[derive(Default)]
 struct Queue {
     new: VecDeque<String>,
+    topics: VecDeque<String>,
     backfill: VecDeque<String>,
     /// Everything in either lane, so an item is queued once.
     queued: HashSet<String>,
@@ -97,6 +103,7 @@ impl Enricher {
         }
         match lane {
             Lane::New => queue.new.push_back(id.to_string()),
+            Lane::Topics => queue.topics.push_back(id.to_string()),
             Lane::Backfill => queue.backfill.push_back(id.to_string()),
         }
         self.wake.notify_all();
@@ -118,6 +125,7 @@ impl Enricher {
     pub fn clear(&self) {
         let mut queue = self.queue.lock().expect("enrich queue lock poisoned");
         queue.new.clear();
+        queue.topics.clear();
         queue.backfill.clear();
         queue.queued.clear();
     }
@@ -142,7 +150,7 @@ impl Enricher {
                     }
                 }
             }
-            if let Some(id) = queue.new.pop_front().or_else(|| queue.backfill.pop_front()) {
+            if let Some(id) = queue.new.pop_front().or_else(|| queue.topics.pop_front()).or_else(|| queue.backfill.pop_front()) {
                 queue.busy = true;
                 return id;
             }
@@ -171,9 +179,16 @@ impl Enricher {
         self.queue.lock().expect("enrich queue lock poisoned").failures = 0;
     }
 
+    /// Nothing waiting, nothing running and not paused: a good time for the slow pass over
+    /// older notes.
+    pub fn is_idle(&self) -> bool {
+        let queue = self.queue.lock().expect("enrich queue lock poisoned");
+        queue.pause.is_none() && !queue.busy && queue.new.is_empty() && queue.topics.is_empty() && queue.backfill.is_empty()
+    }
+
     pub fn status(&self, enabled: bool) -> QueueStatus {
         let queue = self.queue.lock().expect("enrich queue lock poisoned");
-        let pending = queue.new.len() + queue.backfill.len() + usize::from(queue.busy);
+        let pending = queue.new.len() + queue.topics.len() + queue.backfill.len() + usize::from(queue.busy);
         match (&queue.pause, enabled) {
             (_, false) => QueueStatus { state: "off", pending: 0, message: None },
             (Some(pause), _) => QueueStatus { state: "paused", pending, message: Some(pause.message.clone()) },
@@ -204,6 +219,12 @@ pub fn run(app: &AppHandle) {
 
 /// Decides what a failure means for the queue. Returns the lane to put the item back in, if any.
 fn handle(app: &AppHandle, state: &AppState, id: &str, outcome: Result<()>) -> Option<Lane> {
+    let lane = handle_error(app, state, id, outcome)?;
+    // A naming job goes back where it came from, not into the items' lanes.
+    Some(if id.starts_with(crate::topics::ai::JOB_PREFIX) && lane != Lane::New { Lane::Topics } else { lane })
+}
+
+fn handle_error(app: &AppHandle, state: &AppState, id: &str, outcome: Result<()>) -> Option<Lane> {
     let error = match outcome {
         Ok(()) => {
             state.enricher.succeeded();
@@ -276,6 +297,9 @@ fn process(app: &AppHandle, state: &AppState, id: &str) -> Result<()> {
     if !ai.enabled {
         return Ok(());
     }
+    if let Some(topic_id) = id.strip_prefix(crate::topics::ai::JOB_PREFIX) {
+        return crate::topics::ai::name(app, state, topic_id);
+    }
     let Some(item) = state.db.with(|conn| items::get(conn, id))? else { return Ok(()) };
     // Waiting to be linked: it comes back here once it is.
     if item.status == Status::Pending || item.status == Status::Failed {
@@ -289,6 +313,7 @@ fn process(app: &AppHandle, state: &AppState, id: &str) -> Result<()> {
     // Secrets never leave the machine.
     if find_secret(&text).is_some() || find_secret(&item.title).is_some() {
         tracing::debug!(id, "left out of AI: looks like a secret");
+        mark_skipped(state, &item)?;
         return Ok(());
     }
     let config = config_for(&ai)?;
@@ -298,7 +323,11 @@ fn process(app: &AppHandle, state: &AppState, id: &str) -> Result<()> {
         return Ok(());
     }
     if text.is_empty() {
-        return Ok(()); // Nothing to say about it.
+        // Nothing to say about it (and no picture still to describe).
+        if !vision::needs_description(&item) {
+            mark_skipped(state, &item)?;
+        }
+        return Ok(());
     }
 
     let hash = text_hash(&format!("{}\n{text}", item.kind.as_str()));
@@ -318,11 +347,22 @@ fn process(app: &AppHandle, state: &AppState, id: &str) -> Result<()> {
     announce(app, state, &applied)
 }
 
-/// Whether to enrich the item: it was saved since AI was switched on, or was enriched before
-/// (its content changed).
-fn eligible(state: &AppState, item: &Item) -> Result<bool> {
+/// Notes that there is nothing to send for this item, so it isn't picked again and again.
+fn mark_skipped(state: &AppState, item: &Item) -> Result<()> {
     state.db.with(|conn| {
         if concepts::enriched(conn, &item.id)?.is_some() {
+            return Ok(());
+        }
+        concepts::record_enriched(conn, &item.id, &concepts::Enriched { content_hash: SKIPPED.into(), version: VERSION, title: None })
+    })
+}
+
+/// Whether to enrich the item: it was saved since AI was switched on, or was enriched before
+/// (its content changed), or the user asked for older notes to be improved too.
+fn eligible(state: &AppState, item: &Item) -> Result<bool> {
+    let improve_old = state.settings.get().ai.improve_old;
+    state.db.with(|conn| {
+        if improve_old || concepts::enriched(conn, &item.id)?.is_some() {
             return Ok(true);
         }
         Ok(chunks::get_meta(conn, SINCE_KEY)?.is_some_and(|since| item.captured_at.as_str() >= since.as_str()))
@@ -342,7 +382,7 @@ fn describe_image(app: &AppHandle, state: &AppState, config: &Config, ai: &AiSet
 }
 
 /// One provider call, counted against the daily limit.
-fn call(state: &AppState, ai: &AiSettings, config: &Config, request: &Request) -> Result<serde_json::Value> {
+pub(crate) fn call(state: &AppState, ai: &AiSettings, config: &Config, request: &Request) -> Result<serde_json::Value> {
     spend(state, ai)?;
     Ok(llm::complete_json(config, request)?)
 }
@@ -363,6 +403,8 @@ fn seconds_to_midnight() -> u64 {
 }
 
 fn announce(app: &AppHandle, state: &AppState, applied: &apply::Applied) -> Result<()> {
+    crate::topics::note_change(state);
+    crate::topics::maybe_rebuild(app, state);
     let _ = app.emit("item-updated", &applied.item);
     let _ = app.emit("item-concepts", ItemConcepts { id: applied.item.id.clone(), concepts: applied.concepts.clone() });
     let edges = state.db.with(|conn| {
@@ -414,6 +456,7 @@ pub fn settings_changed(app: &AppHandle, before: &AiSettings, after: &AiSettings
     }
     state.enricher.resume();
     requeue_missed(&state);
+    crate::topics::ai::queue_names(&state);
     emit_status(app);
 }
 

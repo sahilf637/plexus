@@ -2,10 +2,12 @@
 //! search, edges, layout). Everything here can be rebuilt from the note files, so the file may
 //! be deleted at any time.
 
+pub mod asks;
 pub mod chunks;
 pub mod concepts;
 pub mod graph;
 pub mod items;
+pub mod topics;
 
 use std::path::Path;
 use std::sync::{Mutex, Once};
@@ -135,6 +137,53 @@ const MIGRATIONS: &[&str] = &[r#"
         title        TEXT,
         enriched_at  TEXT NOT NULL
     );
+"#, r#"
+    -- Topics (M3): a tree of groups, built from the links. All derived; rebuilt when the
+    -- grouping rules change. Each item sits in one lowest topic; its ancestors follow the
+    -- parent chain. `label_by` says who named it (auto, ai or you); only a name the user set
+    -- can't be made again.
+    CREATE TABLE topics (
+        id            TEXT PRIMARY KEY,
+        parent_id     TEXT REFERENCES topics(id) ON DELETE CASCADE,
+        level         INTEGER NOT NULL,
+        label         TEXT NOT NULL,
+        label_by      TEXT NOT NULL DEFAULT 'auto',
+        summary       TEXT,
+        -- The members (a JSON list of item ids) when the AI named it, to tell later how much
+        -- the topic has changed since.
+        named_members TEXT,
+        -- The mean of its members' vectors, for placing new items.
+        centroid      BLOB,
+        version       INTEGER NOT NULL
+    );
+    CREATE INDEX topics_parent ON topics(parent_id);
+    CREATE TABLE topic_members (
+        item_id  TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
+        topic_id TEXT NOT NULL REFERENCES topics(id) ON DELETE CASCADE
+    );
+    CREATE INDEX topic_members_topic ON topic_members(topic_id);
+"#, r#"
+    -- Questions asked of the library and their answers (M4). Derived data, like the rest.
+    CREATE TABLE asks (
+        id         TEXT PRIMARY KEY,
+        scope      TEXT,                       -- a topic or item id, or NULL for the whole library
+        question   TEXT NOT NULL,
+        answer     TEXT NOT NULL DEFAULT '',
+        effort     TEXT NOT NULL DEFAULT 'explain',
+        state      TEXT NOT NULL DEFAULT 'running',
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX asks_created ON asks(created_at);
+    CREATE TABLE ask_sources (
+        ask_id  TEXT NOT NULL REFERENCES asks(id) ON DELETE CASCADE,
+        n       INTEGER NOT NULL,
+        item_id TEXT NOT NULL,                 -- not a foreign key: the note may be deleted later
+        quote   TEXT NOT NULL,
+        PRIMARY KEY (ask_id, n)
+    );
+"#, r#"
+    -- The answer listed sources but none could be found in the notes it named.
+    ALTER TABLE asks ADD COLUMN unsupported INTEGER NOT NULL DEFAULT 0;
 "#];
 
 pub struct Db {

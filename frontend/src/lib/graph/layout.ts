@@ -9,6 +9,7 @@
 import type Graph from 'graphology'
 import louvain from 'graphology-communities-louvain'
 import forceAtlas2 from 'graphology-layout-forceatlas2'
+import type { TopicsData } from '../types'
 
 export type Point = { x: number; y: number }
 
@@ -41,6 +42,73 @@ export function groupedStart(graph: Graph, spacing: number): Record<string, Poin
       positions[id] = { x: centre.x + offset.x, y: centre.y + offset.y }
     })
   })
+  return positions
+}
+
+/** Starting positions that follow the topic tree: each top-level topic gets a patch of the map,
+ * its sub-topics lie inside it, and the items of the lowest topics gather in their own spots.
+ * Returns null when there are no topics to follow. Items without a topic go in a patch of their
+ * own. */
+const UNTOPICED = '(items without a topic)'
+
+export function topicStart(graph: Graph, data: TopicsData | null, spacing: number): Record<string, Point> | null {
+  if (!data?.topics.length || graph.order === 0) return null
+  const children = new Map<string | null, string[]>()
+  for (const topic of data.topics) {
+    const key = topic.parentId && data.topics.some((t) => t.id === topic.parentId) ? topic.parentId : null
+    children.set(key, [...(children.get(key) ?? []), topic.id])
+  }
+  // Items in each lowest topic that are on the map.
+  const own = new Map<string, string[]>()
+  const placed = new Set<string>()
+  for (const [item, topic] of Object.entries(data.itemTopic)) {
+    if (!graph.hasNode(item)) continue
+    own.set(topic, [...(own.get(topic) ?? []), item])
+    placed.add(item)
+  }
+  const loose: string[] = []
+  graph.forEachNode((id) => {
+    if (!placed.has(id)) loose.push(id)
+  })
+
+  const size = new Map<string, number>()
+  const sizeOf = (id: string): number => {
+    const known = size.get(id)
+    if (known !== undefined) return known
+    const total = (own.get(id)?.length ?? 0) + (children.get(id) ?? []).reduce((sum, c) => sum + sizeOf(c), 0)
+    size.set(id, total)
+    return total
+  }
+
+  const positions: Record<string, Point> = {}
+  const arrange = (ids: string[], sizes: number[], centre: Point, ring: number) => {
+    // Biggest in the middle, the rest spiralling outwards.
+    const order = ids.map((id, i) => ({ id, n: sizes[i] })).sort((a, b) => b.n - a.n)
+    return order.map(({ id }, i) => ({ id, at: { x: centre.x + sunflower(i, ring).x, y: centre.y + sunflower(i, ring).y } }))
+  }
+  const lay = (id: string, centre: Point) => {
+    const kids = (children.get(id) ?? []).filter((k) => sizeOf(k) > 0)
+    if (!kids.length) {
+      ;(own.get(id) ?? []).forEach((item, i) => {
+        const offset = sunflower(i, spacing)
+        positions[item] = { x: centre.x + offset.x, y: centre.y + offset.y }
+      })
+      return
+    }
+    const biggest = Math.max(...kids.map(sizeOf))
+    const ring = spacing * 2.6 * Math.sqrt(biggest)
+    for (const { id: kid, at } of arrange(kids, kids.map(sizeOf), centre, ring)) lay(kid, at)
+  }
+
+  const tops = (children.get(null) ?? []).filter((t) => sizeOf(t) > 0)
+  const parts = [...tops, ...(loose.length ? [UNTOPICED] : [])]
+  const biggest = Math.max(...tops.map(sizeOf), loose.length)
+  const ring = spacing * 3 * Math.sqrt(biggest)
+  const sizes = parts.map((id) => (id === UNTOPICED ? loose.length : sizeOf(id)))
+  for (const { id, at } of arrange(parts, sizes, { x: 0, y: 0 }, ring)) {
+    if (id === UNTOPICED) loose.forEach((item, i) => (positions[item] = { x: at.x + sunflower(i, spacing).x, y: at.y + sunflower(i, spacing).y }))
+    else lay(id, at)
+  }
   return positions
 }
 

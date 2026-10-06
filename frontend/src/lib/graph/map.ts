@@ -6,21 +6,25 @@ import Sigma from 'sigma'
 import EdgeCurveProgram from '@sigma/edge-curve'
 import FA2Layout from 'graphology-layout-forceatlas2/worker'
 import { animateNodes } from 'sigma/utils'
+import { PathLayer, type PathState } from './path'
 import type { EdgeDisplayData, NodeDisplayData, PartialButFor } from 'sigma/types'
 import type { Settings } from 'sigma/settings'
 import { tierShown } from '../kinds'
 import type { Navigation } from '../navigation.svelte'
-import { forceDuration, forceSettings, groupedStart, rescaled, sunflower } from './layout'
-import type { Edge, Item, MapData, Position, Tier } from '../types'
+import { forceDuration, forceSettings, groupedStart, rescaled, sunflower, topicStart } from './layout'
+import { TopicLayer } from './topics'
+import type { Edge, Item, MapData, Position, Tier, TopicsData } from '../types'
 
 /** How each tier of link is drawn, and how hard it pulls its items together in the layout. */
 const TIER_STYLE: Record<Tier, { size: number; weight: number }> = {
-  strong: { size: 2.4, weight: 1 },
-  related: { size: 1.2, weight: 0.5 },
-  maybe: { size: 0.7, weight: 0.12 },
+  strong: { size: 3, weight: 1 },
+  related: { size: 1.4, weight: 0.5 },
+  maybe: { size: 0.8, weight: 0.12 },
 }
 
 export interface MapEvents {
+  /** A topic's name was clicked. */
+  topic: (id: string) => void
   /** A click on an item (`additive`: with Shift, to build a selection) or on empty space. */
   select: (id: string | null, additive?: boolean) => void
   /** Right-click on an item, at these pixel coordinates in the map. */
@@ -101,6 +105,8 @@ const PINCH_SPEED = 0.01
  * per second at the very edge). `FOLLOW_CURVE` is how steeply it picks up. */
 const FOLLOW_SPEED = 0.8
 const FOLLOW_CURVE = 5
+/** The middle of the view, as a fraction of the way to its edge, where the view stays still. */
+const FOLLOW_STILL = 0.35
 /** Below this fraction of the top speed the view stays still (and the frame loop rests). */
 const FOLLOW_MIN = 0.008
 /** How far past the outermost items the view may go (in view units; the whole map is about 1). */
@@ -115,6 +121,12 @@ const MAGNET_CLEAR = 0.6
 const MAGNET_STICKY_REACH = 15
 const MAGNET_STICKY_CLEAR = 0.85
 
+/** How many of a focused item's links get their items named (the strongest). */
+const NAMED_NEIGHBOURS = 12
+
+/** A search or topic with this many items or fewer has all of them labelled, even zoomed out. */
+const MATCH_LABELS = 12
+
 /** One scroll event never counts for more than this many pixels, so a burst can't leap. */
 const MAX_PIXELS = 60
 /** How quickly the view catches up with the zoom asked for (time to cover ~63% of the gap). */
@@ -125,6 +137,13 @@ export class MapController {
   private sigma: Sigma
   private colors = themeColors()
   private hovered: string | null = null
+  private topics: TopicsData | null = null
+  private inset = 0
+  /** The linked items named for the item in focus (see `namedNeighbours`); reset when links change. */
+  private named: { focus: string; ids: Set<string> } | null = null
+  private topicLayer!: TopicLayer
+  private pathLayer!: PathLayer
+  private askPath: PathState = { on: false, running: false, steps: [], cited: [], follow: false }
   /** The least sure tier of link drawn (hovering an item shows all of its links). */
   private lowestTier: Tier = 'related'
   private burst = 0
@@ -180,6 +199,10 @@ export class MapController {
       edgeReducer: (edge, data) => this.reduceEdge(edge, data as unknown as EdgeDisplayData),
     })
 
+    this.topicLayer = new TopicLayer(container, this.sigma, this.graph as unknown as Graph, this.layerColors(), (on) =>
+      this.sigma.setSetting('labelRenderedSizeThreshold', on ? 0 : 1000),
+    )
+    this.pathLayer = new PathLayer(container, this.sigma, cssVar('--accent'))
     // Which item the cursor touches is worked out in `retarget` (it reaches a little past the
     // dot), so Sigma's own enter/leave events are not used; clicks go to that item too.
     this.sigma.on('clickNode', ({ node, event }) => this.click(node, event))
@@ -199,6 +222,7 @@ export class MapController {
     // Captured, so it runs before Sigma's own wheel zoom, which it replaces.
     container.addEventListener('wheel', this.onwheel, { passive: false, capture: true })
     container.addEventListener('pointermove', this.onpointermove)
+    container.addEventListener('pointerdown', this.onpointerdown)
     container.addEventListener('pointerleave', this.onpointerleave)
     window.addEventListener('blur', this.onpointerleave)
     window.addEventListener('pointerup', this.onpointerup)
@@ -224,23 +248,34 @@ export class MapController {
     const halfX = (ratio / 2) * (width / Math.max(width, height))
     const halfY = (ratio / 2) * (height / Math.max(width, height))
     const camera = this.sigma.getCamera()
-    const hold = (value: number, current: number, min: number, max: number, half: number) => {
+    // The panel docked over the right edge hides part of the view, so the view may go that much
+    // further right: anything on the map can be brought out from under it.
+    const panel = (this.inset / Math.max(width, height)) * ratio
+    const hold = (value: number, current: number, min: number, max: number, half: number, extra: number) => {
       const low = min - EDGE_ROOM + half
-      const high = max + EDGE_ROOM - half
-      return low > high ? current : Math.min(high, Math.max(low, value))
+      const high = max + EDGE_ROOM - half + extra
+      if (low > high) return current
+      // Already past a limit (dragged there by hand): never snap back, only allow moving inwards.
+      if (current > high) return Math.min(current, Math.max(value, high))
+      if (current < low) return Math.max(current, Math.min(value, low))
+      return Math.min(high, Math.max(low, value))
     }
-    return { x: hold(point.x, camera.x, minX, maxX, halfX), y: hold(point.y, camera.y, minY, maxY, halfY) }
+    return { x: hold(point.x, camera.x, minX, maxX, halfX, panel), y: hold(point.y, camera.y, minY, maxY, halfY, 0) }
   }
 
   private onpointerup = () => {
     this.dragging = false
   }
 
+  private onpointerdown = () => this.pathLayer.touch()
+
   private onpointermove = (event: PointerEvent) => {
     const rect = this.container.getBoundingClientRect()
     this.pointer = { x: event.clientX - rect.left, y: event.clientY - rect.top }
     this.dragging = event.buttons !== 0
+    if (this.dragging) this.pathLayer.touch()
     this.retarget()
+    this.updateCursor()
     if (this.navigation.edgeScroll && !this.edgeFrame) {
       this.measure()
       this.edgeLast = performance.now()
@@ -260,7 +295,11 @@ export class MapController {
   }
 
   private click(node: string | null, event: { x: number; y: number; original: MouseEvent | TouchEvent }) {
-    this.events.select(this.touched(event, node), 'shiftKey' in event.original && event.original.shiftKey)
+    const item = this.touched(event, node)
+    // A topic's name, when no item is under the click.
+    const topic = item ? null : this.topicLayer.hit(event.x, event.y)
+    if (topic) this.events.topic(topic)
+    else this.events.select(item, 'shiftKey' in event.original && event.original.shiftKey)
   }
 
   /** The item the cursor counts as touching, if any; see `MAGNET_REACH`. */
@@ -296,17 +335,27 @@ export class MapController {
   /** Works out which item is touched now (the pointer moved, or the map moved under it). */
   private retarget() {
     const found = this.pointer ? this.itemAt(this.pointer) : null
+    // Resting on a note is using the map.
+    if (found) this.pathLayer.touch()
     if (found === this.hovered) return
     this.hovered = found
-    this.container.style.cursor = found ? 'pointer' : ''
+    this.updateCursor()
     this.sigma.refresh({ skipIndexation: true })
+  }
+
+  /** A hand over an item, or over a topic's name. */
+  private updateCursor() {
+    const overName = !this.hovered && this.pointer !== null && this.topicLayer.hit(this.pointer.x, this.pointer.y) !== null
+    this.container.style.cursor = this.hovered || overName ? 'pointer' : ''
   }
 
   /** The speed, as a fraction of the top one, for a cursor at `position` along a side of length
    * `size`: signed (towards the cursor), 0 in the middle, 1 at the edge. */
   private follow(position: number, size: number): number {
     const distance = Math.min(1, Math.abs(position - size / 2) / (size / 2))
-    const speed = (Math.exp(FOLLOW_CURVE * distance) - 1) / (Math.exp(FOLLOW_CURVE) - 1)
+    // Nothing happens within the still zone; past it the speed climbs from zero, gently at first.
+    const past = Math.max(0, (distance - FOLLOW_STILL) / (1 - FOLLOW_STILL))
+    const speed = (Math.exp(FOLLOW_CURVE * past) - 1) / (Math.exp(FOLLOW_CURVE) - 1)
     return position < size / 2 ? -speed : speed
   }
 
@@ -327,6 +376,7 @@ export class MapController {
     // dragging the map by hand. Either way keep watching, and move on again once it's free.
     this.retarget()
     if (!this.dragging && !this.hovered) {
+      this.pathLayer.touch()
       const step = FOLLOW_SPEED * seconds
       const to = this.sigma.viewportToFramedGraph({ x: width / 2 + dx * width * step, y: height / 2 + dy * height * step })
       this.sigma.getCamera().setState(this.inside(to))
@@ -339,6 +389,7 @@ export class MapController {
   }
 
   private onwheel = (event: WheelEvent) => {
+    this.pathLayer.touch()
     event.preventDefault()
     event.stopPropagation()
     const camera = this.sigma.getCamera()
@@ -424,6 +475,7 @@ export class MapController {
   }
 
   setEdges(edges: Edge[]) {
+    this.named = null
     this.graph.clearEdges()
     for (const edge of edges) {
       if (!this.graph.hasNode(edge.src) || !this.graph.hasNode(edge.dst)) continue
@@ -456,6 +508,17 @@ export class MapController {
     }
     this.resizeNodes()
     this.sigma.refresh()
+  }
+
+  /** The topic tree changed, or an item moved between topics. */
+  setTopics(data: TopicsData | null) {
+    this.topics = data
+    this.topicLayer.setTopics(data)
+  }
+
+  /** The topic shown as picked. */
+  setSelectedTopic(id: string | null) {
+    this.topicLayer.setSelected(id)
   }
 
   /** Shows links down to `tier`: strong only, strong and related, or everything. */
@@ -497,7 +560,7 @@ export class MapController {
     this.layout?.kill()
     const graph = this.graph as unknown as Graph
     return new Promise((done) =>
-      this.moveNodes(groupedStart(graph, SPIRAL_SPACING), GROUP_MS, () => {
+      this.moveNodes(topicStart(graph, this.topics, SPIRAL_SPACING) ?? groupedStart(graph, SPIRAL_SPACING), GROUP_MS, () => {
         const layout = new FA2Layout(this.graph, { settings: forceSettings(graph), getEdgeWeight: 'weight' })
         this.layout = layout
         layout.start()
@@ -583,6 +646,30 @@ export class MapController {
     this.sigma.refresh({ skipIndexation: true })
   }
 
+  /** The Ask agent's path (see `path.ts`); it draws only while it is on and the map is left alone. */
+  setAskPath(state: PathState) {
+    const before = this.askPath
+    this.askPath = state
+    this.pathLayer.set(state)
+    if (!state.on || !state.follow || this.pathLayer.interacting()) return
+    if (state.running && state.steps.length > before.steps.length) {
+      // The newest note the agent looked at, brought into the part of the map the panel leaves.
+      const id = state.steps.at(-1)?.items[0]
+      if (id && !this.isClear(id)) this.focus(id, false)
+    } else if (before.running && !state.running && state.cited.some((id) => !this.isClear(id))) {
+      this.fit(state.cited)
+    }
+  }
+
+  /** On screen and not under the docked panel. */
+  private isClear(id: string): boolean {
+    const display = this.sigma.getNodeDisplayData(id)
+    if (!display) return true
+    const { x, y } = this.sigma.framedGraphToViewport(display)
+    const { width, height } = this.sigma.getDimensions()
+    return x >= 10 && y >= 10 && x <= width - this.inset - 10 && y <= height - 10
+  }
+
   /** Search results: everything else is dimmed. `null` clears the search. */
   setMatches(ids: string[] | null) {
     this.matches = ids ? new Set(ids) : null
@@ -602,6 +689,7 @@ export class MapController {
       return
     }
     this.panHeld.add(direction)
+    this.pathLayer.touch()
     this.panFast = fast
     if (this.panFrame) return
     // A glide to a selected item may still be running; the keys take over from here.
@@ -634,6 +722,7 @@ export class MapController {
 
   /** Zooms in (`true`) or out about the middle of the view. */
   zoom(inwards: boolean) {
+    this.pathLayer.touch()
     const camera = this.sigma.getCamera()
     if (inwards) void camera.animatedZoom({ duration: 200 })
     else void camera.animatedUnzoom({ duration: 200 })
@@ -641,11 +730,13 @@ export class MapController {
 
   /** Shows the whole map. */
   showAll() {
+    this.pathLayer.touch()
     void this.sigma.getCamera().animatedReset({ duration: 300 })
   }
 
   /** Brings the selected item back to the middle of the view. */
   showSelected() {
+    this.pathLayer.touch()
     if (this.selected) this.focus(this.selected, true)
   }
 
@@ -655,6 +746,7 @@ export class MapController {
     cancelAnimationFrame(this.edgeFrame)
     this.container.removeEventListener('wheel', this.onwheel, { capture: true })
     this.container.removeEventListener('pointermove', this.onpointermove)
+    this.container.removeEventListener('pointerdown', this.onpointerdown)
     this.container.removeEventListener('pointerleave', this.onpointerleave)
     window.removeEventListener('blur', this.onpointerleave)
     window.removeEventListener('pointerup', this.onpointerup)
@@ -662,6 +754,8 @@ export class MapController {
     this.resizeObserver.disconnect()
     clearTimeout(this.burstTimer)
     this.layout?.kill()
+    this.topicLayer.destroy()
+    this.pathLayer.destroy()
     this.sigma.kill()
   }
 
@@ -680,9 +774,23 @@ export class MapController {
     const xs = points.map((p) => p.x)
     const ys = points.map((p) => p.y)
     const [minX, maxX, minY, maxY] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)]
-    // Camera ratio 1 shows the whole map; leave a margin around the matches.
-    const ratio = Math.min(1, Math.max(0.15, Math.max(maxX - minX, maxY - minY) * 1.4))
-    this.sigma.getCamera().animate({ x: (minX + maxX) / 2, y: (minY + maxY) / 2, ratio }, { duration: 450 })
+    // Camera ratio 1 shows the whole map; leave a margin around the matches, and fit them in
+    // what a docked panel leaves of the view.
+    const { width } = this.sigma.getDimensions()
+    const roomy = width / Math.max(200, width - this.inset)
+    const ratio = Math.min(1, Math.max(0.15, Math.max(maxX - minX, maxY - minY) * 1.4 * roomy))
+    this.sigma.getCamera().animate({ ...this.clearOfPanel((minX + maxX) / 2, (minY + maxY) / 2, ratio), ratio }, { duration: 450 })
+  }
+
+  /** The camera centre that puts (x, y) in the middle of what a docked panel leaves of the view. */
+  private clearOfPanel(x: number, y: number, ratio: number): { x: number; y: number } {
+    const { width, height } = this.sigma.getDimensions()
+    return { x: x + (this.inset / 2 / Math.max(width, height)) * ratio, y }
+  }
+
+  /** Width of a panel docked over the map's right edge: things are centred in the rest. */
+  setInset(pixels: number) {
+    this.inset = pixels
   }
 
   /** Moves the camera to a node; `zoomIn` also zooms in if we're far out. */
@@ -691,7 +799,7 @@ export class MapController {
     if (!display) return
     const camera = this.sigma.getCamera()
     const ratio = zoomIn ? Math.min(camera.ratio, 0.5) : camera.ratio
-    camera.animate({ x: display.x, y: display.y, ratio }, { duration: 450 })
+    camera.animate({ ...this.clearOfPanel(display.x, display.y, ratio), ratio }, { duration: 450 })
   }
 
   private attributes(item: Item, position: { x: number; y: number }): NodeAttributes {
@@ -715,7 +823,10 @@ export class MapController {
       result.zIndex = 0
     } else {
       result.zIndex = 1
+      // What the hovered (or picked) item links to is named too, not left as bare dots.
+      if (focus !== null && this.namedNeighbours(focus).has(node)) result.forceLabel = true
     }
+    if (this.matches?.has(node) && this.matches.size <= MATCH_LABELS) result.forceLabel = true
     if (node === this.selected || node === this.hovered || this.marked.has(node)) {
       result.highlighted = true
       result.forceLabel = true
@@ -732,6 +843,19 @@ export class MapController {
     const tier = this.graph.getEdgeAttribute(edge, 'tier') as Tier
     if (!focus && !tierShown(tier, this.lowestTier)) return { ...data, hidden: true }
     return data
+  }
+
+  /** The items linked to `focus` that get their names shown: the most strongly linked few. */
+  private namedNeighbours(focus: string): Set<string> {
+    if (this.named?.focus === focus) return this.named.ids
+    const linked: { id: string; weight: number }[] = []
+    this.graph.forEachEdge(focus, (_edge, attrs, source, target) => {
+      linked.push({ id: source === focus ? target : source, weight: (attrs.weight as number) ?? 0 })
+    })
+    linked.sort((a, b) => b.weight - a.weight || a.id.localeCompare(b.id))
+    const ids = new Set(linked.slice(0, NAMED_NEIGHBOURS).map((l) => l.id))
+    this.named = { focus, ids }
+    return ids
   }
 
   /** The item whose neighbourhood stays bright: the one under the pointer, else the selected one. */
@@ -771,8 +895,14 @@ export class MapController {
     context.fillText(label, data.x + data.size + padding, data.y + size / 3)
   }
 
+  private layerColors() {
+    return { text: this.colors.label, surface: this.colors.surface, accent: cssVar('--accent'), dark: this.themeQuery.matches }
+  }
+
   private onThemeChange = () => {
     this.colors = themeColors()
+    this.topicLayer.setColors(this.layerColors())
+    this.pathLayer.setColor(cssVar('--accent'))
     this.sigma.setSetting('labelColor', { color: this.colors.label })
     this.graph.forEachNode((node, attrs) => this.graph.setNodeAttribute(node, 'color', this.colors[attrs.kind]))
     this.graph.forEachEdge((edge, attrs) => this.graph.setEdgeAttribute(edge, 'color', this.edgeColor(attrs.tier as Tier)))

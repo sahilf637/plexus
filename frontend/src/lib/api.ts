@@ -1,7 +1,24 @@
 // The only module that talks to the Rust side. Outside Tauri (`npm run dev:ui`) every call
 // goes to an in-memory mock instead, so the UI can be built in a plain browser.
 
-import type { AiConnection, AiKeyStatus, CaptureResult, Deleted, EnrichStatus, HotkeyStatus, ModelInfo, Item, ItemDetail, MapData, Position, Preview, Settings } from './types'
+import type {
+  AiConnection,
+  Ask,
+  AiKeyStatus,
+  CaptureResult,
+  Deleted,
+  EnrichStatus,
+  HotkeyStatus,
+  Item,
+  ItemDetail,
+  MapData,
+  ModelInfo,
+  OlderProgress,
+  Position,
+  Preview,
+  Settings,
+  TopicsData,
+} from './types'
 import * as mock from './mock/backend'
 
 export const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
@@ -41,6 +58,26 @@ export const enrichRetry = () => call<void>('enrich_retry')
 export const revertTitle = (id: string) => call<void>('revert_title', { id })
 /** Removes a link the AI proposed; it won't come back. */
 export const removeAiLink = (a: string, b: string) => call<void>('remove_ai_link', { a, b })
+export const getTopics = () => call<TopicsData>('get_topics')
+/** Names a topic yourself; it is then never renamed. */
+export const renameTopic = (id: string, name: string) => call<void>('rename_topic', { id, name })
+/** Goes back to the name Plexus made for the topic. */
+export const resetTopicName = (id: string) => call<void>('reset_topic_name', { id })
+/** Builds the topics again now. */
+export const regroupTopics = () => call<void>('regroup_topics')
+/** How the slow pass over older notes is going. */
+export const olderStatus = () => call<OlderProgress>('older_status')
+/** Starts a question about the library, or about one topic or note (`scope`). It comes back at
+ * once; listen for `ask-step` while the agent works, then `ask-done` or `ask-failed`. Rejects when
+ * no AI is connected or the day's limit is used up. */
+export const askStart = (question: string, scope?: string) => call<Ask>('ask_start', { question, scope })
+/** Ends a running question with what it has found so far. */
+export const askStop = (id: string) => call<void>('ask_stop', { id })
+/** Goes on with a question a provider error stopped. */
+export const askResume = (id: string) => call<void>('ask_resume', { id })
+/** Past questions with their answers, newest first. */
+export const askHistory = () => call<Ask[]>('ask_history')
+export const askDelete = (id: string) => call<void>('ask_delete', { id })
 export const hotkeyStatus = () => call<HotkeyStatus>('hotkey_status')
 export const configureHotkey = () => call<void>('configure_hotkey')
 

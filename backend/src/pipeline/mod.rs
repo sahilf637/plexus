@@ -73,6 +73,7 @@ pub fn run(app: AppHandle, queue: Receiver<String>) {
     if let Err(e) = prepare(&state) {
         tracing::error!("couldn't prepare the index for linking: {e}");
     }
+    crate::topics::maybe_rebuild(&app, &state);
     loop {
         match queue.recv_timeout(embed::IDLE_UNLOAD) {
             Ok(first) => {
@@ -169,6 +170,8 @@ fn process(app: &AppHandle, state: &AppState, id: &str) -> Result<()> {
     })?;
     tracing::debug!(id, chunks = texts.len(), links = event.related.len(), elapsed = ?started.elapsed(), "item linked");
     let _ = app.emit("item-linked", event);
+    // It joins a topic, and the topics are rebuilt if it is time.
+    crate::topics::on_linked(app, state, id);
     // Then the AI (if connected) adds titles, concepts and typed links.
     state.enricher.enqueue(id, crate::enrich::Lane::New);
     Ok(())
@@ -195,7 +198,7 @@ fn name_only(item: &Item, body: &str) -> bool {
 }
 
 /// The text that stands for an item when finding related ones.
-fn embedding_text(item: &Item, body: &str) -> String {
+pub(crate) fn embedding_text(item: &Item, body: &str) -> String {
     let body = own_text(body);
     let body = body.as_str();
     match item.kind {

@@ -7,20 +7,27 @@
     deleteItems,
     enrichStatus,
     getMap,
+    getTopics,
     hotkeyStatus,
     on,
     openItemFile,
+    renameTopic,
+    resetTopicName,
     restoreItems,
     saveLayout,
     search,
     showCapture,
   } from './lib/api'
   import { resolve, snapshot } from './lib/paste'
+  import { ask, loadHistory, newAsk, running, onAskDone, onAskFailed, onAskStep, startAsk, type AskScope } from './lib/ask.svelte'
   import { toast } from './lib/toasts.svelte'
-  import type { CaptureResult, Concept, EnrichStatus, Item, ItemConcepts, ItemLinked, LinksChanged, MapData, Tier } from './lib/types'
+  import type { AskFailed, AskStep, Ask, CaptureResult, Concept, EnrichStatus, Item, ItemConcepts, ItemLinked, ItemTopic, LinksChanged, MapData, Tier, Topic, TopicsData } from './lib/types'
   import Icon from './components/Icon.svelte'
   import EmptyState from './components/EmptyState.svelte'
+  import AskPanel from './components/AskPanel.svelte'
   import ItemPanel from './components/ItemPanel.svelte'
+  import TopicList from './components/TopicList.svelte'
+  import TopicPanel from './components/TopicPanel.svelte'
   import MapView from './components/Map.svelte'
   import type { PanDirection } from './lib/graph/map'
   import SettingsDialog from './components/SettingsDialog.svelte'
@@ -46,6 +53,9 @@
   /** The concept whose items are highlighted on the map. */
   let activeConcept = $state<Concept | null>(null)
   let aiStatus = $state<EnrichStatus>({ state: 'off', pending: 0, message: null })
+  /** The topic tree, and the topic picked (its items stay bright on the map). */
+  let topics = $state<TopicsData>({ topics: [], itemTopic: {} })
+  let selectedTopic = $state<string | null>(null)
   /** Delete's Undo stays on screen longer than other messages. */
   const UNDO_MS = 10000
 
@@ -75,8 +85,78 @@
   const conceptItems = $derived(
     activeConcept ? Object.keys(conceptsByItem).filter((id) => conceptsByItem[id].some((c) => c.id === activeConcept!.id)) : null,
   )
-  /** What the map keeps bright: search results, else the active concept's items. */
-  const highlight = $derived(matches ?? conceptItems)
+  /** An item's or a topic's panel is docked over the map's right edge. */
+  const panelOpen = $derived(!!selected || !!selectedTopic || ask.open)
+  const topicsById = $derived(new Map(topics.topics.map((t) => [t.id, t])))
+
+  /** The topics an item sits in, from the top level down. */
+  function pathOf(itemId: string): Topic[] {
+    const found: Topic[] = []
+    for (let at = topicsById.get(topics.itemTopic[itemId] ?? ''); at; at = topicsById.get(at.parentId ?? '')) found.unshift(at)
+    return found
+  }
+  const topicItems = $derived(
+    selectedTopic ? Object.keys(topics.itemTopic).filter((id) => pathOf(id).some((t) => t.id === selectedTopic)) : null,
+  )
+  /** The Ask agent's path, shown on the map only while the Ask panel itself is showing. */
+  const askPath = $derived({
+    on: ask.open && !selected && !selectedTopic,
+    running: running(),
+    steps: ask.steps.map((s) => ({ tool: s.tool, items: s.items })),
+    cited: ask.current?.sources.map((s) => s.itemId) ?? [],
+    follow: ask.follow,
+  })
+
+  /** What the map keeps bright: search results, else the active concept's items, else the
+   * picked topic's. */
+  const highlight = $derived(matches ?? conceptItems ?? topicItems)
+
+  /** Picking an item leaves the topic; the topic's panel and the item's would overlap. */
+  $effect(() => {
+    if (selected) selectedTopic = null
+  })
+
+  function pickTopic(id: string | null) {
+    menu = null
+    selected = null
+    marked = []
+    selectedTopic = id
+  }
+
+  /** Opens the Ask panel, for the whole library or (from a panel's button) one topic or note. */
+  function openAsk(scope: AskScope | null = null) {
+    menu = null
+    selected = null
+    selectedTopic = null
+    marked = []
+    if (scope?.id !== ask.scope?.id) newAsk()
+    ask.scope = scope
+    if (!ask.open) void loadHistory()
+    ask.open = true
+  }
+
+  function onTopicsChanged(next: TopicsData) {
+    topics = next
+    if (selectedTopic && !next.topics.some((t) => t.id === selectedTopic)) selectedTopic = null
+  }
+
+  /** An item joined a topic: it moves in the tree and the counts follow. */
+  async function onItemTopic(event: ItemTopic) {
+    if (!topicsById.has(event.topicId)) {
+      topics = await getTopics() // A topic made just now (Loose notes).
+      return
+    }
+    topics.itemTopic[event.id] = event.topicId
+    recount()
+  }
+
+  function recount() {
+    const parent = new Map(topics.topics.map((t) => [t.id, t.parentId]))
+    const counts = new Map<string, number>()
+    for (const leaf of Object.values(topics.itemTopic))
+      for (let at: string | null | undefined = leaf; at; at = parent.get(at)) counts.set(at, (counts.get(at) ?? 0) + 1)
+    topics = { ...topics, topics: topics.topics.map((t) => ({ ...t, count: counts.get(t.id) ?? 0 })) }
+  }
 
   function toggleConcept(concept: Concept) {
     activeConcept = activeConcept?.id === concept.id ? null : concept
@@ -98,6 +178,8 @@
     for (const concept of data.concepts ?? [])
       for (const id of concept.items) (byItem[id] ??= []).push({ id: concept.id, name: concept.name })
     conceptsByItem = byItem
+    topics = data.topics ?? { topics: [], itemTopic: {} }
+    if (selectedTopic && !topicsById.has(selectedTopic)) selectedTopic = null
     mapVersion++
   }
 
@@ -201,6 +283,8 @@
     mapView?.removeItems(ids)
     data.items = data.items.filter((i) => !gone.has(i.id))
     data.edges = data.edges.filter((e) => !gone.has(e.src) && !gone.has(e.dst))
+    for (const id of ids) delete topics.itemTopic[id]
+    recount()
     if (selected && gone.has(selected)) selected = null
     const left = marked.filter((id) => !gone.has(id))
     marked = left.length > 1 ? left : []
@@ -230,6 +314,13 @@
   })
 
   function onSearchKey(event: KeyboardEvent) {
+    if (event.key === 'Enter' && event.shiftKey && query.trim()) {
+      const question = query
+      query = ''
+      openAsk()
+      void startAsk(question)
+      return
+    }
     if (event.key === 'Enter' && matches?.length) selected = matches[0]
     if (event.key === 'Escape') {
       query = ''
@@ -272,7 +363,10 @@
   function onkeydown(event: KeyboardEvent) {
     const typing = isTyping(event.target, 'input, textarea')
     if (event.key === 'Escape' && !typing) {
+      // Esc first lets go of a picked item or topic; with none, it closes Ask.
+      if (!selected && !selectedTopic && !marked.length) ask.open = false
       activeConcept = null
+      selectedTopic = null
       selected = null
       marked = []
       menu = null
@@ -322,6 +416,11 @@
       case '0':
         mapView?.showAll()
         break
+      case 'a':
+      case 'A':
+        event.preventDefault()
+        openAsk()
+        break
       case 'f':
       case 'F':
         mapView?.showSelected()
@@ -348,6 +447,11 @@
       on<ItemConcepts>('item-concepts', onItemConcepts),
       on<EnrichStatus>('enrich-status', (status) => (aiStatus = status)),
       on<string[]>('items-deleted', onItemsDeleted),
+      on<TopicsData>('topics-changed', onTopicsChanged),
+      on<ItemTopic>('item-topic', onItemTopic),
+      on<AskStep>('ask-step', onAskStep),
+      on<Ask>('ask-done', onAskDone),
+      on<AskFailed>('ask-failed', onAskFailed),
       on('library-changed', loadMap),
     ]
     return () => {
@@ -381,7 +485,10 @@
           placeholder="Search"
           aria-label="Search"
         />
-        {#if matches}<span class="count">{matches.length}</span>{:else}<kbd>/</kbd>{/if}
+        {#if query.trim()}
+          <button class="ask-hint" onclick={() => { const question = query; query = ''; openAsk(); void startAsk(question) }} title="Ask this as a question (Shift+Enter)">Ask <kbd>⇧↵</kbd></button>
+        {/if}
+        {#if matches}<span class="count">{matches.length}</span>{:else if !query.trim()}<kbd>/</kbd>{/if}
       </div>
       {#if activeConcept}
         <button class="concept-pill" onclick={() => (activeConcept = null)} title="Stop highlighting (Esc)">
@@ -391,6 +498,9 @@
       {/if}
     {/if}
     <div class="actions">
+      {#if topics.topics.length}
+        <TopicList {topics} selected={selectedTopic} onpick={pickTopic} />
+      {/if}
       {#if data?.edges.length}
         <div class="segmented" role="radiogroup" aria-label="Links shown">
           {#each showOptions as option}
@@ -399,7 +509,7 @@
               aria-checked={lowestTier === option.tier}
               class:on={lowestTier === option.tier}
               title={option.hint}
-              onclick={() => setShow(option.tier)}>{option.label}</button
+              onclick={() => setShow(option.tier)}><span class="swatch {option.tier}" aria-hidden="true"></span>{option.label}</button
             >
           {/each}
         </div>
@@ -418,6 +528,9 @@
       {:else if aiStatus.state === 'paused'}
         <button class="ai-pill warn" title={aiStatus.message ?? ''} onclick={() => { settingsSection = 'ai'; settingsOpen = true }}>AI paused</button>
       {/if}
+      {#if data?.items.length}
+        <button class="btn" onclick={() => openAsk()} title="Ask a question about your notes (A)"><Icon name="sparkles" size={15} />Ask <kbd>A</kbd></button>
+      {/if}
       <button class="btn primary" onclick={showCapture}><Icon name="plus" size={15} />Add <kbd>{hotkey}</kbd></button>
       <button class="icon-btn" onclick={() => { settingsSection = 'general'; settingsOpen = true }} title="Settings" aria-label="Settings">
         <Icon name="settings" />
@@ -435,6 +548,11 @@
           matches={highlight}
           {lowestTier}
           {marked}
+          {topics}
+          {selectedTopic}
+          inset={panelOpen ? Math.min(400, mainEl?.clientWidth ?? 400) : 0}
+          {askPath}
+          ontopic={pickTopic}
           onselect={pick}
           onmenu={openMenu}
           onplaced={(positions) => saveLayout(positions)}
@@ -451,6 +569,29 @@
           concepts={conceptsByItem[selected] ?? []}
           activeConcept={activeConcept?.id ?? null}
           onconcept={toggleConcept}
+          path={pathOf(selected)}
+          ontopic={pickTopic}
+          onask={() => openAsk({ id: selected!, label: `“${itemsById.get(selected!)?.title ?? 'this note'}”` })}
+        />
+      {:else if selectedTopic && topicsById.get(selectedTopic)}
+        <TopicPanel
+          topic={topicsById.get(selectedTopic)!}
+          {topics}
+          items={itemsById}
+          edges={data.edges}
+          onselect={(id) => pick(id)}
+          ontopic={pickTopic}
+          onclose={() => (selectedTopic = null)}
+          onrename={(id, name) => renameTopic(id, name).catch((e) => toast(`Couldn't rename: ${e}`))}
+          onreset={(id) => resetTopicName(id)}
+          onask={() => openAsk({ id: selectedTopic!, label: topicsById.get(selectedTopic!)?.label ?? 'this topic' })}
+        />
+      {:else if ask.open}
+        <AskPanel
+          items={itemsById}
+          onselect={(id) => pick(id)}
+          onclose={() => (ask.open = false)}
+          onsettings={() => { settingsSection = 'ai'; settingsOpen = true }}
         />
       {/if}
       {#if marked.length > 1}
@@ -555,6 +696,20 @@
     outline: none;
   }
 
+  .ask-hint {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 22px;
+    padding: 0 6px 0 8px;
+    border: none;
+    border-radius: 6px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
   .concept-pill {
     display: inline-flex;
     align-items: center;
@@ -619,6 +774,31 @@
     display: flex;
     align-items: center;
     gap: 6px;
+  }
+
+  /* A bit of line in the colour and weight links of that strength are drawn with. */
+  .actions .segmented button {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .swatch {
+    display: inline-block;
+    flex: none;
+    width: 12px;
+    margin-right: 6px;
+    border-top: 2px solid var(--map-edge);
+    border-radius: 2px;
+  }
+
+  .swatch.strong {
+    border-top-width: 3px;
+    border-top-color: var(--map-edge-strong);
+  }
+
+  .swatch.maybe {
+    border-top-width: 1px;
+    border-top-color: var(--map-edge-maybe);
   }
 
   .actions .segmented {

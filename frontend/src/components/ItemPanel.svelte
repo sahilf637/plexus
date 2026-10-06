@@ -3,7 +3,7 @@
   import { marked } from 'marked'
   import { fileUrl, getItem, linkItems, openItemFile, openSource, removeAiLink, revertTitle, search, unlinkItems } from '../lib/api'
   import { formatBytes, isAiLink, kindIcon, kindLabel, linkLabel, linkStrength, tierLabel, tiers } from '../lib/kinds'
-  import type { Concept, Edge, Item, ItemDetail } from '../lib/types'
+  import type { Concept, Edge, Item, ItemDetail, Topic } from '../lib/types'
   import Icon from './Icon.svelte'
 
   let {
@@ -12,20 +12,28 @@
     edges,
     onselect,
     onclose,
+    onask,
     ondelete,
     concepts,
     activeConcept,
     onconcept,
+    path,
+    ontopic,
   }: {
     id: string
     items: Map<string, Item>
     edges: Edge[]
     onselect: (id: string) => void
     onclose: () => void
+    /** Opens Ask, limited to this. */
+    onask: () => void
     ondelete: () => void
     concepts: Concept[]
     activeConcept: number | null
     onconcept: (concept: Concept) => void
+    /** The topics the item sits in, from the top level down. */
+    path: Topic[]
+    ontopic: (id: string) => void
   } = $props()
 
   let detail = $state<ItemDetail | null>(null)
@@ -184,6 +192,7 @@
           <Icon name="trash" />
         </button>
       {/if}
+      <button class="icon-btn" onclick={onask} title="Ask about this" aria-label="Ask about this"><Icon name="sparkles" /></button>
       <button class="icon-btn" onclick={onclose} title="Close (Esc)" aria-label="Close"><Icon name="close" /></button>
     </span>
   </header>
@@ -192,6 +201,13 @@
   {#if error}
     <p class="error">{error}</p>
   {:else if detail}
+    {#if path.length}
+      <nav class="path" aria-label="Topics">
+        {#each path as step, i (step.id)}
+          {#if i > 0}<Icon name="chevron" size={12} />{/if}<button onclick={() => ontopic(step.id)}>{step.label}</button>
+        {/each}
+      </nav>
+    {/if}
     <h2 bind:this={heading}>{detail.title}</h2>
     <p class="meta">
       {capturedLabel(detail.capturedAt)}{#if detail.size} · {formatBytes(detail.size)}{/if}
@@ -425,6 +441,26 @@
     display: flex;
     gap: 2px;
     margin-right: -6px;
+  }
+
+  .path {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px;
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+
+  .path button {
+    padding: 0 2px;
+    border: none;
+    background: none;
+    color: var(--text-muted);
+  }
+
+  .path button:hover {
+    color: var(--text);
   }
 
   h2 {

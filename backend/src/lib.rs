@@ -1,3 +1,4 @@
+mod ask;
 mod capture;
 mod commands;
 mod db;
@@ -10,6 +11,7 @@ mod llm;
 mod pipeline;
 mod settings;
 mod state;
+mod topics;
 mod tray;
 mod windows;
 
@@ -58,12 +60,14 @@ pub fn run() {
             tracing::info!(path = %library_path.display(), "opening library");
             let library = Library::open(library_path)?;
             let db = Db::open(&library.index_path())?;
+            // A question that was going when the app closed can't be continued.
+            db.with(|conn| db::asks::fail_unfinished(conn))?;
             // Lets the map show images straight from the library folder (and nothing else).
             app.asset_protocol_scope().allow_directory(library.root(), true)?;
             let (pipeline, link_queue) = Pipeline::new(Embedder::new(find_model(app.handle())));
             let (fetcher, fetch_queue) = Fetcher::new();
             let (extractor, extract_queue) = Extractor::new(Ocr::new(find_models(app.handle(), ocr::MODEL_DIR, Ocr::find)));
-            app.manage(AppState { settings, hotkey: Hotkey::default(), library, db, pipeline, fetcher, extractor, enricher: Default::default() });
+            app.manage(AppState { settings, hotkey: Hotkey::default(), library, db, pipeline, fetcher, extractor, enricher: Default::default(), topics: Default::default(), asker: Default::default() });
             start_background_work(app.handle(), link_queue, fetch_queue, extract_queue);
             tray::create(app.handle())?;
             hotkey::register(app.handle());
@@ -113,6 +117,16 @@ pub fn run() {
             commands::enrich_retry,
             commands::revert_title,
             commands::remove_ai_link,
+            commands::get_topics,
+            commands::rename_topic,
+            commands::reset_topic_name,
+            commands::regroup_topics,
+            commands::older_status,
+            commands::ask_start,
+            commands::ask_stop,
+            commands::ask_resume,
+            commands::ask_history,
+            commands::ask_delete,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Plexus");
@@ -128,6 +142,7 @@ fn start_background_work(app: &AppHandle, link_queue: Receiver<String>, fetch_qu
         match library::reconcile::reconcile(&state.library, &state.db) {
             Ok(report) => {
                 tracing::info!(?report, elapsed = ?started.elapsed(), "library reconciled");
+                topics::forget(&state);
                 let _ = app.emit("library-changed", ());
                 let purged = library::trash::purge(&state.library, library::trash::KEEP);
                 if purged > 0 {
@@ -139,6 +154,7 @@ fn start_background_work(app: &AppHandle, link_queue: Receiver<String>, fetch_qu
         fetch::run(&app, fetch_queue);
         extract::worker::run(&app, extract_queue);
         enrich::run(&app);
+        enrich::older::run(&app);
         pipeline::run(app.clone(), link_queue);
     });
 }
