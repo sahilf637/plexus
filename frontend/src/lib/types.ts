@@ -170,9 +170,8 @@ export interface ItemDetail extends Item {
   attachments: { name: string; file: string; kind: Kind; size: number | null }[]
   /** Text read out of the original (a PDF's pages, an image's words), apart from the note. */
   extractedText?: string | null
-  /** The title was written by the AI, and can go back to `titleWas`. */
+  /** The title was written by the AI (and not changed by hand since). */
   titleByAi: boolean
-  titleWas: string | null
 }
 
 /** How sure a link is. */

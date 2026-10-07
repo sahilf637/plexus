@@ -67,7 +67,12 @@ impl Asker {
             }
             None => Vec::new(),
         };
-        let scope = start.scope.map(str::to_string).or_else(|| prior.last().and_then(|a| a.scope.clone()));
+        // An empty scope is the user saying "everything"; none at all follows the conversation.
+        let scope = match start.scope {
+            Some("") => None,
+            Some(id) => Some(id.to_string()),
+            None => prior.last().and_then(|a| a.scope.clone()),
+        };
         db.with(|conn| {
             let key = format!("asks_{}", Utc::now().format("%Y-%m-%d"));
             let used: u32 = chunks::get_meta(conn, &key)?.and_then(|v| v.parse().ok()).unwrap_or(0);
@@ -90,17 +95,30 @@ impl Asker {
             Some(before) => format!("{} {question}", before.chars().take(200).collect::<String>()),
             None => question.to_string(),
         };
+        // What the user pointed at comes first, then what the conversation cited, then what
+        // search found for the question.
+        let anchor = tools.anchor();
         let cited = tools.introduce(&carried.cited);
         let found = tools.candidates(&query);
-        let mut ids = cited.ids;
-        let mut lines: Vec<String> = cited.cards.lines().map(str::to_string).collect();
-        for (card, id) in found.cards.lines().zip(found.ids) {
-            if !lines.iter().any(|line| line == card) {
-                lines.push(card.to_string());
-                ids.push(id);
+        let mut ids = Vec::new();
+        let mut lines: Vec<String> = Vec::new();
+        let mut add = |cards: &str, from: Vec<String>| {
+            for (card, id) in cards.lines().zip(from) {
+                if !lines.iter().any(|line| line == card) {
+                    lines.push(card.to_string());
+                    ids.push(id);
+                }
             }
+        };
+        if let Some(anchor) = &anchor {
+            add(&anchor.cards, anchor.ids.clone());
         }
-        let run = Run::new(question, scope.as_deref(), lines.join("\n"), ids, carried.text, start.budget.clone());
+        add(&cited.cards, cited.ids);
+        add(&found.cards, found.ids);
+        let mut run = Run::new(question, scope.as_deref(), lines.join("\n"), ids, carried.text, start.budget.clone());
+        if let Some(anchor) = anchor {
+            run = run.anchored(anchor.line);
+        }
         self.stops.lock().expect("asker lock").insert(id.clone(), Arc::new(AtomicBool::new(false)));
         self.runs.lock().expect("asker lock").insert(id.clone(), Active { run, memory: tools.into_memory(), scope, budget: start.budget.clone() });
         Ok(id)
@@ -294,6 +312,23 @@ mod tests {
         assert!(!ask.unsupported);
         assert!(!asker.can_resume(&id));
         assert_eq!(db.with(|conn| asks::get(conn, &id)).unwrap().unwrap().answer, ask.answer);
+    }
+
+    #[test]
+    fn a_follow_up_keeps_the_scope_unless_the_user_widens_it() {
+        let (_dir, db) = library();
+        let asker = Asker::default();
+        let scoped = |question, thread, scope| Start { question, scope, thread, per_day: 20, budget: Budget::default() };
+        let first = asker.begin(&db, &Fixed, &scoped("What is this?", None, Some("i1"))).unwrap();
+        let scope_of = |id: &str| db.with(|conn| asks::get(conn, id)).unwrap().unwrap().scope;
+        assert_eq!(scope_of(&first).as_deref(), Some("i1"));
+
+        // Nothing said: the conversation's scope goes on.
+        let same = asker.begin(&db, &Fixed, &scoped("And more?", Some(&first), None)).unwrap();
+        assert_eq!(scope_of(&same).as_deref(), Some("i1"));
+        // "Everything" said: the follow-up isn't limited any more.
+        let wide = asker.begin(&db, &Fixed, &scoped("And elsewhere?", Some(&first), Some(""))).unwrap();
+        assert_eq!(scope_of(&wide), None);
     }
 
     #[test]

@@ -139,10 +139,10 @@ pub fn enrich_retry(app: AppHandle, state: State<'_, AppState>) {
     let _ = app.emit("enrich-status", state.enricher.status(state.settings.get().ai.enabled));
 }
 
-/// Puts back the title an item had before the AI renamed it (and keeps it from changing again).
+/// Sets an item's title by hand; the AI never replaces it after that.
 #[tauri::command]
-pub fn revert_title(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<()> {
-    if let Some(item) = enrich::apply::revert_title(&state.library, &state.db, &id)? {
+pub fn set_title(app: AppHandle, state: State<'_, AppState>, id: String, title: String) -> Result<()> {
+    if let Some(item) = enrich::apply::set_title(&state.library, &state.db, &id, &title)? {
         let _ = app.emit("item-updated", &item);
     }
     Ok(())
@@ -358,9 +358,8 @@ pub struct ItemDetail {
     /// Text read out of the original (a PDF's pages, an image's words), apart from the note.
     extracted_text: Option<String>,
     concepts: Vec<concepts::Concept>,
-    /// The title was written by the AI (and can be reverted to `title_was`).
+    /// The title was written by the AI (and not changed by hand since).
     title_by_ai: bool,
-    title_was: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -392,8 +391,7 @@ pub fn get_item(state: State<'_, AppState>, id: String) -> Result<ItemDetail> {
     let (body, extracted_text) = (own.to_string(), extracted.map(str::to_string));
     let concepts = state.db.with(|conn| concepts::of_item(conn, &id))?;
     let title_by_ai = note.meta.title_by.as_deref() == Some("ai");
-    let title_was = note.meta.title_was.clone().filter(|_| title_by_ai);
-    Ok(ItemDetail { item, body, asset_file, attachments, extracted_text, concepts, title_by_ai, title_was })
+    Ok(ItemDetail { item, body, asset_file, attachments, extracted_text, concepts, title_by_ai })
 }
 
 /// Everything the map draws: items, edges and saved positions.
@@ -647,6 +645,24 @@ pub async fn pick_folder(app: AppHandle) -> Option<PathBuf> {
         let _ = tx.send(folder.and_then(|f| f.into_path().ok()));
     });
     rx.await.ok().flatten()
+}
+
+/// Makes `path` the library to open at the next start, after checking it can be one: Plexus has
+/// to be able to write its folders and open the index there, or it wouldn't start again. The
+/// library open now isn't touched (nor is the one left behind).
+#[tauri::command]
+pub fn change_library(state: State<'_, AppState>, path: PathBuf) -> Result<()> {
+    if path == state.library.root() {
+        return Err(Error::Invalid("That is the library you have open already.".into()));
+    }
+    if !path.is_dir() {
+        return Err(Error::Invalid("That folder doesn't exist.".into()));
+    }
+    let library = crate::library::Library::open(path.clone()).map_err(|e| Error::Invalid(format!("Plexus can't use that folder: {e}")))?;
+    crate::db::Db::open(&library.index_path()).map_err(|e| Error::Invalid(format!("Plexus can't use that folder: {e}")))?;
+    let mut settings = state.settings.get();
+    settings.library_path = path;
+    state.settings.set(settings)
 }
 
 /// Starts Plexus again, e.g. to open a library folder chosen in setup.

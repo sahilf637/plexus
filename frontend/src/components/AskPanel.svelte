@@ -13,6 +13,7 @@
     items,
     onselect,
     onclose,
+    onscope,
     onsettings,
     suggestions,
   }: {
@@ -21,6 +22,8 @@
     /** Opens a note; for a source, with the passage it quoted. */
     onselect: (id: string, quote?: string) => void
     onclose: () => void
+    /** The note or topic the questions are about was clicked: show it. */
+    onscope: (scope: NonNullable<typeof ask.scope>) => void
     /** Opens the AI part of Settings. */
     onsettings: () => void
     /** Example questions for an empty panel, made from the library's own topics. */
@@ -216,6 +219,17 @@
     </span>
   </header>
 
+  {#if ask.scope}
+    <!-- What the questions are about stays in sight, whatever has been asked. -->
+    <div class="anchor" role="group" aria-label="What you're asking about">
+      <button class="open" onclick={() => onscope(ask.scope!)} title={ask.scope.kind === 'note' ? 'Show this note' : 'Show this topic'}>
+        <Icon name={ask.scope.kind === 'note' ? 'file' : 'tree'} size={13} />
+        <span>About {ask.scope.label}</span>
+      </button>
+      <button class="icon-btn" onclick={() => (ask.scope = null)} title="Ask about everything instead" aria-label="Ask about everything instead"><Icon name="close" size={13} /></button>
+    </div>
+  {/if}
+
   <div class="scroll" bind:this={scroller}>
     {#if ask.historyOpen}
       {#if conversations.length}
@@ -270,12 +284,6 @@
               <li><button onclick={() => startAsk(suggestion)}>{suggestion}</button></li>
             {/each}
           </ul>
-        {/if}
-        {#if ask.scope}
-          <p class="scope">
-            About {ask.scope.label}
-            <button class="link" onclick={() => (ask.scope = null)}>Ask about everything instead</button>
-          </p>
         {/if}
         {#if ask.error}<p class="error" role="alert">{ask.error}</p>{/if}
       </div>
@@ -398,7 +406,44 @@
     overflow-wrap: anywhere;
   }
 
-  .scope,
+  .anchor {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    margin: 0 12px 4px 16px;
+    padding: 3px 4px 3px 10px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 12px;
+    align-self: flex-start;
+    max-width: calc(100% - 28px);
+  }
+
+  .anchor .open {
+    min-width: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0;
+    border: none;
+    background: none;
+    color: inherit;
+  }
+
+  .anchor .open span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .anchor .icon-btn {
+    width: 20px;
+    height: 20px;
+    color: inherit;
+  }
+
   .muted,
   .note,
   .empty {

@@ -13,7 +13,7 @@
     setSettings,
     startHotkey,
   } from '../lib/api'
-  import { aiPresets } from '../lib/kinds'
+  import { aiPresets, shortPath } from '../lib/kinds'
   import Icon, { type IconName } from './Icon.svelte'
   import ProviderForm from './ProviderForm.svelte'
   import type { AiConnection, FolderInfo, HotkeyStatus, Settings } from '../lib/types'
@@ -71,11 +71,6 @@
 
   async function useDefault() {
     if (settings) folder = await inspectFolder(settings.libraryPath)
-  }
-
-  /** A home-relative path reads better: ~/Plexus. */
-  function shortPath(path: string): string {
-    return path.replace(/^\/home\/[^/]+|^\/Users\/[^/]+|^[A-Z]:\\Users\\[^\\]+/, '~')
   }
 
   // --- AI --------------------------------------------------------------------------------

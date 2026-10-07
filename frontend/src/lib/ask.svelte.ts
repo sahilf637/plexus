@@ -10,7 +10,12 @@ import type { Ask, AskFailed, AskStep } from './types'
 export interface AskScope {
   id: string
   label: string
+  kind: 'note' | 'topic'
 }
+
+/** Turns a stored scope id back into what the panel shows for it (set by the app, which knows the
+ * notes and topics). Null when it is gone. */
+export const scopeResolver: { fn: ((id: string) => AskScope | null) | null } = { fn: null }
 
 interface AskState {
   open: boolean
@@ -84,7 +89,8 @@ export async function startAsk(question: string) {
   ask.historyOpen = false
   const follows = canFollow(ask.current) ? ask.current : null
   try {
-    const started = await askStart(text, ask.scope?.id, follows?.threadId)
+    // An empty scope says "everything": without it a follow-up would stay with the conversation's.
+    const started = await askStart(text, ask.scope?.id ?? '', follows?.threadId)
     ask.earlier = follows ? [...ask.earlier, follows] : []
     ask.steps = []
     ask.current = started
@@ -159,7 +165,9 @@ export function threads(): { id: string; first: Ask; latest: Ask; count: number 
 export function reopen(threadId: string) {
   const asks = ask.history.filter((a) => a.threadId === threadId).toSorted((a, b) => a.createdAt.localeCompare(b.createdAt))
   if (!asks.length) return
-  ask.current = asks[asks.length - 1]
+  const latest = asks[asks.length - 1]
+  ask.current = latest
+  ask.scope = latest.scope ? (scopeResolver.fn?.(latest.scope) ?? null) : null
   ask.earlier = asks.slice(0, -1)
   ask.steps = []
   ask.error = null

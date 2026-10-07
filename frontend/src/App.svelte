@@ -20,7 +20,7 @@
     showCapture,
   } from './lib/api'
   import { resolve, snapshot } from './lib/paste'
-  import { ask, loadHistory, newAsk, running, onAskDone, onAskFailed, onAskStep, startAsk, type AskScope } from './lib/ask.svelte'
+  import { ask, loadHistory, newAsk, running, onAskDone, onAskFailed, onAskStep, scopeResolver, startAsk, type AskScope } from './lib/ask.svelte'
   import { toast } from './lib/toasts.svelte'
   import type { AskFailed, AskStep, Ask, CaptureResult, Concept, EnrichStatus, Item, ItemConcepts, ItemLinked, ItemTopic, LinksChanged, MapData, Tier, Topic, TopicsData } from './lib/types'
   import Icon from './components/Icon.svelte'
@@ -30,6 +30,7 @@
   import TopicList from './components/TopicList.svelte'
   import TopicPanel from './components/TopicPanel.svelte'
   import MapView from './components/Map.svelte'
+  import ViewMenu from './components/ViewMenu.svelte'
   import type { PanDirection } from './lib/graph/map'
   import SettingsDialog from './components/SettingsDialog.svelte'
   import Setup from './components/Setup.svelte'
@@ -175,6 +176,7 @@
     running: running(),
     steps: ask.steps.map((s) => ({ tool: s.tool, items: s.items })),
     cited: ask.current?.sources.map((s) => s.itemId) ?? [],
+    anchor: ask.scope?.kind === 'note' ? ask.scope.id : null,
     follow: ask.follow,
   })
 
@@ -198,6 +200,15 @@
     marked = []
     selectedTopic = id
   }
+
+  /** What Ask is limited to when it points at a note or topic, as the panel names it. */
+  function scopeOf(id: string): AskScope | null {
+    const item = itemsById.get(id)
+    if (item) return { id, label: `“${item.title}”`, kind: 'note' }
+    const topic = topicsById.get(id)
+    return topic ? { id, label: topic.label, kind: 'topic' } : null
+  }
+  scopeResolver.fn = scopeOf
 
   /** Opens the Ask panel, for the whole library or (from a panel's button) one topic or note. */
   function openAsk(scope: AskScope | null = null) {
@@ -501,7 +512,8 @@
       case 'a':
       case 'A':
         event.preventDefault()
-        openAsk()
+        // Asked from a note or topic that is open, it is about that; else it keeps what it had.
+        openAsk(selected ? scopeOf(selected) : selectedTopic ? scopeOf(selectedTopic) : ask.open ? ask.scope : null)
         break
       case 'f':
       case 'F':
@@ -605,6 +617,7 @@
         >
           <Icon name="layout" />
         </button>
+        <ViewMenu />
       {/if}
       {#if aiStatus.state === 'working' || (aiStatus.state === 'idle' && aiStatus.pending > 0)}
         <span class="ai-pill" title="AI is adding titles, concepts and links"><span class="spin"></span>{aiStatus.pending}</span>
@@ -654,7 +667,7 @@
           onconcept={toggleConcept}
           path={pathOf(selected)}
           ontopic={pickTopic}
-          onask={() => openAsk({ id: selected!, label: `“${itemsById.get(selected!)?.title ?? 'this note'}”` })}
+          onask={() => openAsk(scopeOf(selected!))}
           width={itemPanelWidth}
           minWidth={MIN_PANEL}
           maxWidth={Math.max(MIN_PANEL, mainWidth - 160)}
@@ -676,7 +689,7 @@
           onclose={() => (selectedTopic = null)}
           onrename={(id, name) => renameTopic(id, name).catch((e) => toast(`Couldn't rename: ${e}`))}
           onreset={(id) => resetTopicName(id)}
-          onask={() => openAsk({ id: selectedTopic!, label: topicsById.get(selectedTopic!)?.label ?? 'this topic' })}
+          onask={() => openAsk(scopeOf(selectedTopic!))}
         />
       {:else if ask.open}
         <AskPanel
@@ -686,6 +699,7 @@
             cited = quote ? { id, quote } : null
           }}
           onclose={() => (ask.open = false)}
+          onscope={(scope) => (scope.kind === 'note' ? pick(scope.id) : pickTopic(scope.id))}
           onsettings={() => { settingsSection = 'ai'; settingsOpen = true }}
           suggestions={askSuggestions}
         />

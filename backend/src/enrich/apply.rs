@@ -5,6 +5,7 @@
 
 use std::collections::HashSet;
 use std::fs;
+use std::sync::Mutex;
 
 use serde::Deserialize;
 
@@ -15,7 +16,7 @@ use crate::db::concepts::{self, Concept, Enriched};
 use crate::db::graph::{self, AiEdge};
 use crate::db::items::{self, Item};
 use crate::db::Db;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::extract::split_body;
 use crate::library::Library;
 use crate::library::note::Note;
@@ -118,10 +119,17 @@ pub fn apply(
 
 // --- title -------------------------------------------------------------------------------
 
+/// Held while a title is read, changed and written, so the AI and the user can't overwrite each
+/// other: whichever comes second sees the first one's result, and the user's always stays.
+static TITLE_LOCK: Mutex<()> = Mutex::new(());
+
 /// Replaces the item's title with the AI's when it is Plexus's own guess (see
-/// [`may_replace_title`]); the old one is kept in the note to put back. Returns the updated item
-/// when it changed.
+/// [`may_replace_title`]); the old one is kept in the note. Returns the updated item when it
+/// changed. The item is looked up again under the lock: the user may have renamed it (and so
+/// moved its file) while the AI was thinking.
 fn retitle(library: &Library, db: &Db, item: &Item, title: &str, last_ai_title: Option<&str>) -> Result<Option<Item>> {
+    let _held = TITLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(item) = db.with(|conn| items::get(conn, &item.id))? else { return Ok(None) };
     let mut note = library.read_note(&library.absolute(&item.path))?;
     if title == note.meta.title || !may_replace_title(&note, last_ai_title) {
         return Ok(None);
@@ -131,7 +139,7 @@ fn retitle(library: &Library, db: &Db, item: &Item, title: &str, last_ai_title: 
     }
     note.meta.title_by = Some("ai".into());
     note.meta.title = title.to_string();
-    write_title(library, db, item, note).map(Some)
+    write_title(library, db, &item, note).map(Some)
 }
 
 /// Whether the title is still one Plexus made: not changed by the user, and not reverted.
@@ -148,15 +156,23 @@ fn may_replace_title(note: &Note, last_ai_title: Option<&str>) -> bool {
     }
 }
 
-/// Puts the AI's title back, and keeps it from being replaced again.
-pub fn revert_title(library: &Library, db: &Db, id: &str) -> Result<Option<Item>> {
+/// Sets the title by hand. From then on it is the user's: the AI never replaces it, even if its
+/// answer was already on the way. Returns the updated item when the title changed.
+pub fn set_title(library: &Library, db: &Db, id: &str, title: &str) -> Result<Option<Item>> {
+    let title = truncate(&title.split_whitespace().collect::<Vec<_>>().join(" "), TITLE_MAX);
+    if title.is_empty() {
+        return Err(Error::Invalid("a title needs at least one character".into()));
+    }
+    let _held = TITLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let Some(item) = db.with(|conn| items::get(conn, id))? else { return Ok(None) };
     let mut note = library.read_note(&library.absolute(&item.path))?;
-    let Some(was) = note.meta.title_was.take().filter(|_| note.meta.title_by.as_deref() == Some("ai")) else {
+    let already = note.meta.title_by.as_deref() == Some("you");
+    if title == note.meta.title && already {
         return Ok(None);
-    };
-    note.meta.title = was;
+    }
+    note.meta.title = title;
     note.meta.title_by = Some("you".into());
+    note.meta.title_was = None;
     write_title(library, db, &item, note).map(Some)
 }
 
@@ -395,13 +411,13 @@ mod tests {
         assert!(applied.item.path.contains("how-the-borrow-checker-works") && !library.absolute(&item.path).exists());
         assert_eq!(db.with(|conn| concepts::enriched(conn, &item.id)).unwrap().unwrap().title.as_deref(), Some("How the borrow checker works"));
 
-        // Reverting puts the first title back and keeps it from changing again.
-        let reverted = revert_title(&library, &db, &item.id).unwrap().unwrap();
-        assert_eq!(reverted.title, "meeting notes about the borrow checker and lifetimes");
+        // Setting the title by hand keeps the AI from changing it again.
+        let edited = set_title(&library, &db, &item.id, "  My   own title ").unwrap().unwrap();
+        assert_eq!(edited.title, "My own title");
         let again = answer(serde_json::json!({ "title": "Another title", "summary": "x", "concepts": [], "links": [] }));
-        let applied = apply(&library, &db, &embedder, &reverted, &context, again, "hash-2".into()).unwrap();
+        let applied = apply(&library, &db, &embedder, &item, &context, again, "hash-2".into()).unwrap();
         assert!(!applied.title_changed);
-        assert_eq!(applied.item.title, "meeting notes about the borrow checker and lifetimes");
+        assert_eq!(applied.item.title, "My own title");
         assert!(applied.concepts.is_empty());
         assert_eq!(db.with(|conn| concepts::of_item(conn, &item.id)).unwrap(), vec![]);
     }

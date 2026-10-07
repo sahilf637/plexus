@@ -94,6 +94,8 @@ pub struct Run {
     thread: String,
     /// Cards for the notes local search found before the first call, ready to put in the prompt.
     candidates: String,
+    /// Says what the user pointed at when the question is limited to a topic or note.
+    anchor: Option<String>,
     effort: Option<Effort>,
     /// Tools run so far.
     calls: usize,
@@ -113,6 +115,12 @@ pub struct Run {
 }
 
 impl Run {
+    /// Tells the agent what the question's scope is (see `LibraryTools::anchor`).
+    pub fn anchored(mut self, line: String) -> Self {
+        self.anchor = Some(line);
+        self
+    }
+
     pub fn new(question: &str, scope: Option<&str>, candidates: String, shown: Vec<String>, thread: String, budget: Budget) -> Self {
         Self {
             question: question.trim().to_string(),
@@ -120,6 +128,7 @@ impl Run {
             budget,
             thread,
             candidates,
+            anchor: None,
             effort: None,
             calls: 0,
             spent: 0,
@@ -273,6 +282,10 @@ impl Run {
         }
         out.push_str(&format!("Question: {}\n", self.question));
         if self.scope.is_some() {
+            if let Some(anchor) = &self.anchor {
+                out.push_str(anchor);
+                out.push('\n');
+            }
             out.push_str("The user limited the question to part of the library; the tools already stay inside it.\n");
         }
         if !self.candidates.is_empty() {
@@ -448,6 +461,18 @@ mod tests {
         let mut value = step(effort, learned, "read");
         value["item"] = json!("i1");
         value
+    }
+
+    #[test]
+    fn the_prompt_says_what_the_user_pointed_at() {
+        let run = Run::new("Summarize this", Some("i1"), String::new(), Vec::new(), String::new(), Budget::default());
+        assert!(!run.prompt(false).contains("mean that note"));
+        let run = run.anchored("The user is asking about the note “Ownership” (n1). “This” and “it” mean that note.".into());
+        let prompt = run.prompt(false);
+        assert!(prompt.contains("“Ownership” (n1)") && prompt.contains("the tools already stay inside it"));
+        // No scope, no anchor line.
+        let open = Run::new("Summarize this", None, String::new(), Vec::new(), String::new(), Budget::default()).anchored("x".into());
+        assert!(!open.prompt(false).contains("x\n"));
     }
 
     fn answer(text: &str) -> Value {

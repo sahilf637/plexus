@@ -2,22 +2,26 @@
   import { onMount, tick } from 'svelte'
   import {
     aiKeyStatus,
+    changeLibrary,
     configureHotkey,
     getSettings,
     hotkeyStatus,
+    inspectFolder,
     olderStatus,
+    pickFolder,
     regroupTopics,
+    restartApp,
     setAiKey,
     setSettings,
     aiUsage,
     askCheck,
   } from '../lib/api'
-  import { aiPresets } from '../lib/kinds'
+  import { aiPresets, shortPath } from '../lib/kinds'
   import { navigation, setNavigation } from '../lib/navigation.svelte'
   import Icon, { type IconName } from './Icon.svelte'
   import UsageChart from './UsageChart.svelte'
   import ProviderForm from './ProviderForm.svelte'
-  import type { AiConnection, AiKeyStatus, AiSettings, HotkeyStatus, OlderProgress, Settings, UsageReport } from '../lib/types'
+  import type { AiConnection, AiKeyStatus, AiSettings, FolderInfo, HotkeyStatus, OlderProgress, Settings, UsageReport } from '../lib/types'
 
   type Section = 'general' | 'capture' | 'ai' | 'usage' | 'library'
 
@@ -47,6 +51,46 @@
   let askChecking = $state(false)
   let askChecked = $state<{ ok: boolean; protocol?: string; message: string } | null>(null)
   let verdict = $state<HTMLElement>()
+
+  // The library folder. A folder is picked, then confirmed (it takes a restart to open).
+  /** The folder picked and what is in it, waiting to be confirmed. */
+  let nextLibrary = $state<FolderInfo | null>(null)
+  let choosingLibrary = $state(false)
+  let switching = $state(false)
+  let libraryError = $state('')
+
+  async function chooseLibrary() {
+    choosingLibrary = true
+    libraryError = ''
+    try {
+      const path = await pickFolder()
+      if (!path) return
+      const info = await inspectFolder(path)
+      if (info.current) {
+        nextLibrary = null
+        libraryError = 'That is the library you have open already.'
+      } else {
+        nextLibrary = info
+      }
+    } catch (e) {
+      libraryError = String(e)
+    } finally {
+      choosingLibrary = false
+    }
+  }
+
+  async function openLibrary() {
+    if (!nextLibrary) return
+    switching = true
+    libraryError = ''
+    try {
+      await changeLibrary(nextLibrary.path)
+      await restartApp()
+    } catch (e) {
+      libraryError = String(e)
+      switching = false
+    }
+  }
 
   /** What the AI has been used for; refreshed while the Usage page is showing. */
   let usage = $state<UsageReport | null>(null)
@@ -515,10 +559,25 @@
               <div class="item">
                 <div class="label">
                   <span>Library folder</span>
-                  <span class="desc path" title={settings.libraryPath}>{settings.libraryPath}</span>
+                  <span class="desc path" title={settings.libraryPath}>{shortPath(settings.libraryPath)}</span>
                 </div>
+                <button class="btn" onclick={chooseLibrary} disabled={choosingLibrary || switching}>{choosingLibrary ? 'Choosing…' : 'Change…'}</button>
               </div>
+              {#if nextLibrary}
+                <div class="item">
+                  <div class="label">
+                    <span>Open <span class="path" title={nextLibrary.path}>{shortPath(nextLibrary.path)}</span>?</span>
+                    <span class="desc">
+                      {#if nextLibrary.notes}{nextLibrary.notes} {nextLibrary.notes === 1 ? 'note' : 'notes'} already there.{:else}Empty, so a new library starts there.{/if}
+                      Plexus restarts to open it. Your current library stays as it is.
+                    </span>
+                  </div>
+                  <button class="btn" onclick={() => (nextLibrary = null)} disabled={switching}>Cancel</button>
+                  <button class="btn primary" onclick={openLibrary} disabled={switching}>{switching ? 'Restarting…' : 'Restart and open'}</button>
+                </div>
+              {/if}
             </div>
+            {#if libraryError}<p class="error" role="alert">{libraryError}</p>{/if}
 
             <h4>Topics</h4>
             <div class="group">

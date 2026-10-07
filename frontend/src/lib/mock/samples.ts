@@ -120,7 +120,6 @@ export function sampleItems(): ItemDetail[] {
     extracted: kind === 'url' ? 'web@1' : null,
     summary: summaries[i] ?? null,
     titleByAi: false,
-    titleWas: null,
     body,
     assetFile: null,
     attachments: [],

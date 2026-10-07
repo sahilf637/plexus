@@ -36,6 +36,7 @@
     | 'collapse'
     | 'zoom-in'
     | 'zoom-out'
+    | 'eye'
 </script>
 
 <script lang="ts">
@@ -51,6 +52,7 @@
     collapse: 'M20 10h-6V4M4 14h6v6M14 10l6.5-6.5M10 14l-6.5 6.5',
     'zoom-in': 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4M11 8v6M8 11h6',
     'zoom-out': 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4M8 11h6',
+    eye: 'M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12zM12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z',
     history: 'M4 12a8 8 0 1 0 2.3-5.7M4 5v4h4M12 8v4l3 2',
     send: 'M5 12l14-7-5 14-2.5-5.5z',
     stop: 'M7 7h10v10H7z',

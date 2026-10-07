@@ -65,6 +65,8 @@ export class TopicLayer {
   /** Items in each topic and its sub-topics. */
   private members = new Map<string, string[]>()
   private hue = new Map<string, number>()
+  /** The lowest topic each item is in. */
+  private leaf = new Map<string, string>()
   private shapes = new Map<string, Shape>()
   private signature = ''
   private placed: Placed[] = []
@@ -109,6 +111,7 @@ export class TopicLayer {
     this.children.clear()
     this.members.clear()
     this.hue.clear()
+    this.leaf.clear()
     this.shapes.clear()
     this.signature = ''
     this.lastKey = ''
@@ -125,6 +128,7 @@ export class TopicLayer {
       }
     }
     for (const [item, leaf] of Object.entries(data.itemTopic)) {
+      this.leaf.set(item, leaf)
       for (let at: string | null | undefined = leaf; at; at = this.topics.get(at)?.parentId) {
         const list = this.members.get(at) ?? []
         list.push(item)
@@ -142,6 +146,12 @@ export class TopicLayer {
       paint(topic.id)
     }
     this.draw()
+  }
+
+  /** The hue of the top-level topic the item is in (the colour of its region), if it is in one. */
+  hueOfItem(id: string): number | null {
+    const topic = this.leaf.get(id)
+    return topic === undefined ? null : (this.hue.get(topic) ?? null)
   }
 
   /** The topic shown as picked, if any. */

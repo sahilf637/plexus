@@ -2,6 +2,7 @@
   import { onMount } from 'svelte'
   import { MapController, type PanDirection } from '../lib/graph/map'
   import type { PathState } from '../lib/graph/path'
+  import { mapView } from '../lib/mapView.svelte'
   import { navigation } from '../lib/navigation.svelte'
   import type { Edge, Item, MapData, Position, Tier, TopicsData } from '../lib/types'
 
@@ -128,6 +129,10 @@
 
   $effect(() => {
     map?.setNavigation({ ...navigation })
+  })
+
+  $effect(() => {
+    map?.setView({ ...mapView })
   })
 </script>
 

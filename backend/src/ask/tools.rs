@@ -32,6 +32,15 @@ const SECOND_HOP: usize = 3;
 const MEMBERS: usize = 10;
 /// How many notes are looked at before a search is filtered by scope and secrets.
 const OVERFETCH: usize = 40;
+/// A question limited to a topic or note looks this far down the library's ranking before the
+/// scope's own notes are picked out (the whole library: [`OVERFETCH`]).
+const SCOPED_OVERFETCH: usize = 300;
+/// How many notes the agent starts with when the user pointed at a topic or note: the note and
+/// its closest links, or a topic's newest notes.
+const ANCHOR_NOTES: usize = 8;
+/// A scope this small is simply listed when a search finds too little in it, so a question that
+/// doesn't match its words ("summarize this") still reaches what the user pointed at.
+const BACKFILL_MAX: usize = 60;
 /// An exact search stops here, whatever it has covered.
 const SCAN_TIME: Duration = Duration::from_millis(1_500);
 
@@ -120,6 +129,14 @@ pub struct Candidates {
     pub ids: Vec<String>,
 }
 
+/// What the user pointed at (the Ask button on a note or topic): a line telling the agent what
+/// "this" is, and the notes to start from, whatever the question says.
+pub struct Anchor {
+    pub line: String,
+    pub cards: String,
+    pub ids: Vec<String>,
+}
+
 impl<'a> LibraryTools<'a> {
     pub fn new(db: &'a Db, finder: &'a dyn Finder, scope: Option<&str>, budget: Budget) -> Self {
         Self::resume(db, finder, scope, budget, Memory::default())
@@ -135,7 +152,8 @@ impl<'a> LibraryTools<'a> {
 
     /// Cards (name | title | summary) for the notes closest to the question, to start from.
     pub fn candidates(&mut self, question: &str) -> Candidates {
-        let found = self.finder.hybrid(question, OVERFETCH).unwrap_or_default();
+        let reach = if self.scope.is_some() { SCOPED_OVERFETCH } else { OVERFETCH };
+        let found = self.finder.hybrid(question, reach).unwrap_or_default();
         let candidates = self.budget.candidates;
         let db = self.db;
         let (cards, ids) = db
@@ -152,6 +170,39 @@ impl<'a> LibraryTools<'a> {
             })
             .unwrap_or_default();
         Candidates { cards, ids }
+    }
+
+    /// The topic or note the question is limited to, named for the agent and with its own notes
+    /// ready to read. `None` for the whole library (or a scope that is gone or a secret).
+    pub fn anchor(&mut self) -> Option<Anchor> {
+        let scope = self.scope.clone()?;
+        let db = self.db;
+        db.with(|conn| {
+            let line = if let Some(topic) = topics::get(conn, &scope)? {
+                let name = self.mem.topics.name(&topic.id);
+                let about = topic.summary.as_deref().map(one_line).filter(|s| !s.is_empty()).map(|s| format!(" It is about: {s}")).unwrap_or_default();
+                format!("The user is asking about the topic “{}” ({name}), with its sub-topics.{about} “This” and “here” mean that topic.", one_line(&topic.label))
+            } else if let Some(item) = items::get(conn, &scope)? {
+                if self.is_secret(conn, &item.id) {
+                    return Ok(None);
+                }
+                let name = self.mem.notes.name(&item.id);
+                format!("The user is asking about the note “{}” ({name}) and the notes linked to it. “This” and “it” mean that note.", one_line(&item.title))
+            } else {
+                return Ok(None);
+            };
+            let order = self.scope_order(conn, &scope)?;
+            let ids = self.keep(conn, order, None, ANCHOR_NOTES);
+            let mut cards = Vec::new();
+            for id in &ids {
+                if let Some(card) = self.card(conn, id)? {
+                    cards.push(card);
+                }
+            }
+            Ok(Some(Anchor { line, cards: cards.join("\n"), ids }))
+        })
+        .ok()
+        .flatten()
     }
 
     /// Cards for notes named by id (e.g. the ones a conversation cited before), so a follow-up can
@@ -196,6 +247,26 @@ impl<'a> LibraryTools<'a> {
             return Ok(Some(set));
         }
         Ok(Some(HashSet::new()))
+    }
+
+    /// The scope's notes in the order to start from: a note first and then what it links to,
+    /// strongest first; a topic's notes newest first.
+    fn scope_order(&self, conn: &Connection, scope: &str) -> Result<Vec<String>> {
+        if topics::get(conn, scope)?.is_some() {
+            let all = topics::all(conn)?;
+            let members = topics::memberships(conn)?;
+            let mut ids: Vec<String> = topics::members_with_descendants(&all, &members).remove(scope).unwrap_or_default().into_iter().collect();
+            ids.sort_by(|a, b| b.cmp(a));
+            return Ok(ids);
+        }
+        let mut ids = vec![scope.to_string()];
+        for edge in graph::edges_of(conn, scope)? {
+            let other = if edge.src == scope { edge.dst } else { edge.src };
+            if !ids.contains(&other) {
+                ids.push(other);
+            }
+        }
+        Ok(ids)
     }
 
     /// The scope for a call: the user's if there is one, else the topic the model named.
@@ -264,11 +335,13 @@ impl<'a> LibraryTools<'a> {
             Ok(scope) => scope,
             Err(message) => return refusal(message),
         };
-        // Search first (it takes the database itself), then filter and describe.
+        // Search first (it takes the database itself), then filter and describe. Inside a scope
+        // the ranking is read further down, as most of the library is outside it.
+        let reach = if scope.is_some() { SCOPED_OVERFETCH } else { OVERFETCH };
         let found = match mode {
-            Mode::Hybrid => self.finder.hybrid(query, OVERFETCH),
-            Mode::Semantic => self.finder.semantic(query, OVERFETCH),
-            Mode::Keyword => self.db.with(|conn| graph::search(conn, query, OVERFETCH)),
+            Mode::Hybrid => self.finder.hybrid(query, reach),
+            Mode::Semantic => self.finder.semantic(query, reach),
+            Mode::Keyword => self.db.with(|conn| graph::search(conn, query, reach)),
             Mode::Exact => Ok(Vec::new()),
         };
         let found = match found {
@@ -279,7 +352,7 @@ impl<'a> LibraryTools<'a> {
         let results = self.budget.results;
         let cap_chars = self.budget.result_chars;
         let done = db.with(|conn| {
-            let allowed = self.scope_set(conn, scope)?;
+            let allowed = self.scope_set(conn, scope.clone())?;
             let mut lines = Vec::new();
             let mut ids = Vec::new();
             let mut more = 0;
@@ -291,7 +364,21 @@ impl<'a> LibraryTools<'a> {
                     ids.push(id);
                 }
             } else {
-                let matched = self.keep(conn, found, allowed.as_ref(), OVERFETCH);
+                let mut matched = self.keep(conn, found, allowed.as_ref(), reach);
+                // A small scope that the words didn't find much in is listed instead (not for a
+                // keyword search, which should say when nothing matched).
+                if let (Some(set), Some(scope)) = (&allowed, &scope) {
+                    if mode != Mode::Keyword && matched.len() < results && set.len() <= BACKFILL_MAX {
+                        for id in self.scope_order(conn, scope)? {
+                            if matched.len() >= results {
+                                break;
+                            }
+                            if !matched.contains(&id) && !self.is_secret(conn, &id) {
+                                matched.push(id);
+                            }
+                        }
+                    }
+                }
                 more = matched.len().saturating_sub(results);
                 for id in matched.into_iter().take(results) {
                     if let Some(card) = self.card(conn, &id)? {
@@ -738,6 +825,54 @@ mod tests {
         assert!(!found.cards.contains("Deploy notes"));
         assert!(!found.ids.contains(&"i4".to_string()));
         assert_eq!(tools.mem.resolve("n1").as_deref(), Some("i1"));
+    }
+
+    #[test]
+    fn a_note_the_user_pointed_at_is_named_and_comes_with_what_it_links_to() {
+        let (_dir, db) = library();
+        // Search knows nothing about the question; the note is there regardless.
+        let finder = Fixed(vec!["i3".into()]);
+        let mut tools = LibraryTools::new(&db, &finder, Some("i1"), Budget::default());
+        let anchor = tools.anchor().unwrap();
+        assert!(anchor.line.contains("“Ownership” (n1)") && anchor.line.contains("“This” and “it” mean that note"));
+        assert_eq!(anchor.ids, ["i1", "i2"]);
+        assert!(anchor.cards.starts_with("n1 | Ownership"));
+        assert!(!anchor.cards.contains("Soup"));
+        assert_eq!(tools.mem.resolve("n1").as_deref(), Some("i1"));
+    }
+
+    #[test]
+    fn a_topic_the_user_pointed_at_is_named_with_its_notes() {
+        let (_dir, db) = library();
+        let finder = Fixed(Vec::new());
+        let mut tools = LibraryTools::new(&db, &finder, Some("a-top"), Budget::default());
+        let anchor = tools.anchor().unwrap();
+        assert!(anchor.line.contains("“Rust” (t1)") && anchor.line.contains("About Rust"));
+        assert_eq!(anchor.ids, ["i2", "i1"]);
+        assert_eq!(tools.mem.topics.id("t1").map(String::as_str), Some("a-top"));
+    }
+
+    #[test]
+    fn there_is_no_anchor_for_the_whole_library_or_a_secret_note() {
+        let (_dir, db) = library();
+        let finder = all_ids();
+        assert!(LibraryTools::new(&db, &finder, None, Budget::default()).anchor().is_none());
+        assert!(LibraryTools::new(&db, &finder, Some("i4"), Budget::default()).anchor().is_none());
+        assert!(LibraryTools::new(&db, &finder, Some("gone"), Budget::default()).anchor().is_none());
+    }
+
+    #[test]
+    fn a_small_scope_is_listed_when_the_words_find_nothing_in_it() {
+        let (_dir, db) = library();
+        // The question matches only a note outside the scope, as "summarize this" tends to.
+        let finder = Fixed(vec!["i3".into()]);
+        let mut tools = LibraryTools::new(&db, &finder, Some("i1"), Budget::default());
+        let out = tools.run(&search("summarize this", Mode::Hybrid));
+        assert_eq!(out.shown, ["i1", "i2"]);
+        assert!(!out.text.contains("Soup"));
+        // A keyword search still says plainly when nothing matched.
+        let keyword = tools.run(&search("summarize this", Mode::Keyword));
+        assert!(keyword.shown.is_empty());
     }
 
     #[test]

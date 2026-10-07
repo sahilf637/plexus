@@ -33,6 +33,11 @@ export function tierShown(tier: Tier, lowest: Tier): boolean {
   return tiers.indexOf(tier) <= tiers.indexOf(lowest)
 }
 
+/** A home-relative path reads better: ~/Plexus. */
+export function shortPath(path: string): string {
+  return path.replace(/^\/home\/[^/]+|^\/Users\/[^/]+|^[A-Z]:\\Users\\[^\\]+/, '~')
+}
+
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`

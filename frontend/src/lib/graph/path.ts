@@ -26,6 +26,8 @@ export interface PathState {
   running: boolean
   steps: PathStep[]
   cited: string[]
+  /** The note the question is about (the Ask button on a note), ringed while the panel shows. */
+  anchor?: string | null
   /** Bring the latest note into view when it is out of sight (never while the map is in use). */
   follow: boolean
 }
@@ -124,7 +126,7 @@ export class PathLayer {
     cancelAnimationFrame(this.frame)
     const ctx = this.clear()
     const now = performance.now()
-    const { on, running, steps, cited } = this.state
+    const { on, running, steps, cited, anchor } = this.state
     if (!on || document.hidden || now < this.quietUntil) return
 
     // The line and the faint rings fade away once the answer is in.
@@ -140,6 +142,19 @@ export class PathLayer {
     ctx.lineCap = 'round'
     ctx.strokeStyle = this.accent
     ctx.fillStyle = this.accent
+
+    // What the question is about: a steady dashed ring, there from the start.
+    const pointed = anchor ? this.at(anchor) : null
+    if (pointed) {
+      ctx.save()
+      ctx.setLineDash([3, 5])
+      ctx.globalAlpha = 0.9
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.arc(pointed.x, pointed.y, pointed.r + 9, 0, Math.PI * 2)
+      ctx.stroke()
+      ctx.restore()
+    }
 
     if (fade > 0) {
       // Everything it was shown.

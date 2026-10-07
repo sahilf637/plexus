@@ -93,6 +93,8 @@ frontend/              Svelte 5 + Vite; two entries: index.html (map), capture.h
                        Settings), `ItemPanel.svelte` (docked panel and wide reader), `PdfView.svelte` (pdf.js,
                        loaded on demand), `Lightbox.svelte`
   src/lib/quote.ts     finds and marks an Ask source's quoted passage in a shown note or PDF page
+  src/lib/mapView.svelte.ts  how the map is shown (colour by type/topic/age, size, focus reach), saved on this computer;
+                       set from `ViewMenu.svelte` in the toolbar and applied by `graph/map.ts`
 backend/               Tauri v2 crate `plexus`
   src/library/         note files: paths, frontmatter, originals, reconcile, trash, hand-made links
   src/db/              SQLite index: migrations, items, edges, search

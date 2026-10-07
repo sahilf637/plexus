@@ -96,7 +96,7 @@ mime: application/pdf
 pages: 14
 extracted: pdf-text@1          # what produced the body; "edited" once the user changes it
 links: []                      # links the user made by hand
-title_by: ai                   # only when an AI provider renamed the note ("you" once reverted)
+title_by: ai                   # only when an AI provider renamed the note ("you" once edited by hand; the AI then leaves it alone)
 title_was: Pasted note         # the title before that, to put back
 ---
 
@@ -278,7 +278,7 @@ How a question runs (details in [plans/M4.md](plans/M4.md)):
 |---|---|
 | **M0** | Scaffold; hotkey + capture window; note files + index; text/code/URL captured fully, images/files stored raw; secret detection; duplicates; local embeddings; similarity edges; Sigma map. Fully offline. See [plans/M0.md](plans/M0.md). |
 | **M1** | Curate and extract. Delete items (trash with undo); plain-language link reasons and clearer strength; hand-made links. Extractors: plain-text files (`.md`, `.txt`, code files) read as text, rich HTML → markdown, images (local PaddleOCR PP-OCRv6 small, ~30 MB, swappable for a provider's vision later), PDF/DOCX/EPUB text; clipboard watching (opt-in). Until an item has text it links by name only, capped at `maybe`. No accept/reject flow. See [plans/M1.md](plans/M1.md). |
-| **M2** | LLM enrichment of new items: titles (marked AI, revertible), summaries, concepts, typed edges with reasons, image descriptions. OpenAI-compatible, Anthropic and Gemini providers; keys in the system keychain. See [plans/M2.md](plans/M2.md). |
+| **M2** | LLM enrichment of new items: titles (marked AI, editable; a title set by hand always wins), summaries, concepts, typed edges with reasons, image descriptions. OpenAI-compatible, Anthropic and Gemini providers; keys in the system keychain. See [plans/M2.md](plans/M2.md). |
 | **M3** | Topics: a variable-depth tree built locally by graph clustering, named locally (better with AI), shown as regions that appear with zoom, kept stable as the library grows; plus the slow, capped "improve older notes" pass. See [plans/M3.md](plans/M3.md). |
 | **M4** | Ask: an agent with six small tools, checked citations (the quote must really be in the note), effort-sized answers and its path shown live on the map. See [plans/M4.md](plans/M4.md). |
 | **M5** | Scale: viewport slicing, incremental layout; imports (Obsidian, Notion, bookmarks); MCP server. |

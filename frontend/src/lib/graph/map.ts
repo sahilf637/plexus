@@ -10,7 +10,9 @@ import { PathLayer, type PathState } from './path'
 import type { EdgeDisplayData, NodeDisplayData, PartialButFor } from 'sigma/types'
 import type { Settings } from 'sigma/settings'
 import { tierShown } from '../kinds'
+import { VIEW_DEFAULT, type MapView } from '../mapView.svelte'
 import type { Navigation } from '../navigation.svelte'
+import { AGE_COLORS, hsl, mix } from './palette'
 import { forceDuration, forceSettings, groupedStart, rescaled, sunflower, topicStart } from './layout'
 import { TopicLayer } from './topics'
 import type { Edge, Item, MapData, Position, Tier, TopicsData } from '../types'
@@ -40,6 +42,8 @@ interface NodeAttributes {
   label: string
   color: string
   kind: Item['kind']
+  /** When it was added, in ms (0 if unknown). */
+  captured: number
   highlighted?: boolean
 }
 
@@ -68,6 +72,7 @@ function themeColors() {
     url: cssVar('--kind-url'),
     image: cssVar('--kind-image'),
     file: cssVar('--kind-file'),
+    neutral: cssVar('--text-muted'),
     dim: cssVar('--map-dim'),
     edge: cssVar('--map-edge'),
     edgeStrong: cssVar('--map-edge-strong'),
@@ -122,6 +127,8 @@ const MAGNET_STICKY_REACH = 15
 const MAGNET_STICKY_CLEAR = 0.85
 
 /** How many of a focused item's links get their items named (the strongest). */
+/** The links an item is drawn as having when the view makes all items the same size. */
+const SAME_SIZE_LINKS = 2
 const NAMED_NEIGHBOURS = 12
 
 /** A search or topic with this many items or fewer has all of them labelled, even zoomed out. */
@@ -170,6 +177,9 @@ export class MapController {
   /** Items picked together (Shift-click), e.g. to delete them in one go. */
   private marked = new Set<string>()
   private matches: Set<string> | null = null
+  private view: MapView = { ...VIEW_DEFAULT }
+  /** The items within reach of `focus`, kept while that stays the same (see `hoodOf`). */
+  private hood: { focus: string; reach: number; ids: Set<string> } | null = null
   private events: MapEvents
   private themeQuery = window.matchMedia('(prefers-color-scheme: dark)')
   /** The window can start hidden (launched at login), with no size yet: redraw once it has one. */
@@ -451,6 +461,7 @@ export class MapController {
       this.graph.addNode(item.id, this.attributes(item, position))
     })
     this.setEdges(data.edges)
+    this.recolor()
     if (placed.length) this.events.placed(placed)
     // Many items never placed (a library made or synced elsewhere): group them now.
     if (placed.length >= BURST_SIZE && this.graph.size > 0) void this.tidy()
@@ -460,10 +471,12 @@ export class MapController {
   addItem(item: Item) {
     if (this.graph.hasNode(item.id)) {
       this.graph.mergeNodeAttributes(item.id, { label: shortLabel(item.title), kind: item.kind })
+      this.recolor()
       return
     }
     const position = spiralPosition(this.graph.order)
     this.graph.addNode(item.id, { ...this.attributes(item, position), highlighted: true })
+    this.recolor()
     this.events.placed([{ id: item.id, ...position }])
     setTimeout(() => {
       if (this.graph.hasNode(item.id)) this.graph.setNodeAttribute(item.id, 'highlighted', false)
@@ -476,6 +489,7 @@ export class MapController {
 
   setEdges(edges: Edge[]) {
     this.named = null
+    this.hood = null
     this.graph.clearEdges()
     for (const edge of edges) {
       if (!this.graph.hasNode(edge.src) || !this.graph.hasNode(edge.dst)) continue
@@ -486,12 +500,12 @@ export class MapController {
     this.resizeNodes()
   }
 
-  /** Items with many sure links are drawn bigger; maybes don't count. */
+  /** Items with many sure links are drawn bigger (unless the view says all alike); maybes don't count. */
   private resizeNodes() {
     this.graph.forEachNode((node) => {
       let links = 0
       this.graph.forEachEdge(node, (_, attrs) => (links += attrs.tier === 'maybe' ? 0 : 1))
-      this.graph.setNodeAttribute(node, 'size', nodeSize(links))
+      this.graph.setNodeAttribute(node, 'size', nodeSize(this.view.sizeBy === 'same' ? SAME_SIZE_LINKS : links))
     })
   }
 
@@ -500,6 +514,7 @@ export class MapController {
     // A running layout holds on to the nodes it is moving.
     this.layout?.kill()
     this.layout = undefined
+    this.hood = null
     for (const id of ids) {
       if (this.graph.hasNode(id)) this.graph.dropNode(id)
       this.marked.delete(id)
@@ -514,6 +529,7 @@ export class MapController {
   setTopics(data: TopicsData | null) {
     this.topics = data
     this.topicLayer.setTopics(data)
+    if (this.view.colorBy === 'topic') this.recolor()
   }
 
   /** The topic shown as picked. */
@@ -524,7 +540,40 @@ export class MapController {
   /** Shows links down to `tier`: strong only, strong and related, or everything. */
   setLowestTier(tier: Tier) {
     this.lowestTier = tier
+    this.hood = null
     this.sigma.refresh({ skipIndexation: true })
+  }
+
+  /** What the colours and sizes mean, and how much is kept bright around the picked item. */
+  setView(view: MapView) {
+    const before = this.view
+    this.view = view
+    this.hood = null
+    if (view.colorBy !== before.colorBy) this.recolor()
+    if (view.sizeBy !== before.sizeBy) this.resizeNodes()
+    this.sigma.refresh()
+  }
+
+  /** Paints every dot by what the view says its colour means. */
+  private recolor() {
+    const dark = this.themeQuery.matches
+    // Age counts by rank, not by date, so a library added all at once still shows a gradient.
+    let rank: Map<string, number> | null = null
+    if (this.view.colorBy === 'age') {
+      const byDate = this.graph.mapNodes((id, a) => ({ id, at: a.captured as number })).sort((x, y) => x.at - y.at || x.id.localeCompare(y.id))
+      rank = new Map(byDate.map((n, i) => [n.id, byDate.length > 1 ? i / (byDate.length - 1) : 1]))
+    }
+    this.graph.forEachNode((node, attrs) => {
+      let color = this.colors[attrs.kind as Item['kind']]
+      if (this.view.colorBy === 'topic') {
+        const hue = this.topicLayer.hueOfItem(node)
+        color = hue === null ? this.colors.neutral : hsl(hue, dark ? 62 : 58, dark ? 66 : 46)
+      } else if (rank) {
+        const ends = dark ? AGE_COLORS.dark : AGE_COLORS.light
+        color = mix(ends.old, ends.recent, rank.get(node) ?? 1)
+      }
+      this.graph.setNodeAttribute(node, 'color', color)
+    })
   }
 
   private edgeColor(tier: Tier): string {
@@ -805,10 +854,11 @@ export class MapController {
   private attributes(item: Item, position: { x: number; y: number }): NodeAttributes {
     return {
       ...position,
-      size: nodeSize(0),
+      size: nodeSize(this.view.sizeBy === 'same' ? SAME_SIZE_LINKS : 0),
       label: shortLabel(item.title),
       color: this.colors[item.kind],
       kind: item.kind,
+      captured: Date.parse(item.capturedAt) || 0,
     }
   }
 
@@ -816,7 +866,7 @@ export class MapController {
     const result: Partial<NodeDisplayData> = { ...data }
     const focus = this.focused()
     const outsideSearch = this.matches !== null && !this.matches.has(node)
-    const outsideFocus = focus !== null && node !== focus && !this.graph.areNeighbors(node, focus)
+    const outsideFocus = focus !== null && !this.inReach(node, focus)
     if (outsideSearch || outsideFocus) {
       result.color = this.colors.dim
       result.label = ''
@@ -827,6 +877,7 @@ export class MapController {
       if (focus !== null && this.namedNeighbours(focus).has(node)) result.forceLabel = true
     }
     if (this.matches?.has(node) && this.matches.size <= MATCH_LABELS) result.forceLabel = true
+    if (this.hidesRest() && !this.inReach(node, this.selected!)) result.hidden = true
     if (node === this.selected || node === this.hovered || this.marked.has(node)) {
       result.highlighted = true
       result.forceLabel = true
@@ -838,11 +889,55 @@ export class MapController {
   private reduceEdge(edge: string, data: EdgeDisplayData): Partial<EdgeDisplayData> {
     const [a, b] = this.graph.extremities(edge)
     const focus = this.focused()
-    if (focus && a !== focus && b !== focus) return { ...data, hidden: true }
+    if (focus && !this.edgeInReach(a, b, focus)) return { ...data, hidden: true }
+    if (this.hidesRest() && !(this.inReach(a, this.selected!) && this.inReach(b, this.selected!))) return { ...data, hidden: true }
     if (this.matches && !(this.matches.has(a) && this.matches.has(b))) return { ...data, hidden: true }
     const tier = this.graph.getEdgeAttribute(edge, 'tier') as Tier
     if (!focus && !tierShown(tier, this.lowestTier)) return { ...data, hidden: true }
     return data
+  }
+
+  /** Whether the picked item's surroundings are all that is shown. */
+  private hidesRest(): boolean {
+    return this.view.hideRest && this.selected !== null && this.graph.hasNode(this.selected)
+  }
+
+  /** Whether `node` is the item itself or within the view's reach of it (one step of links, or
+   * two over the links that are shown). */
+  private inReach(node: string, focus: string): boolean {
+    if (node === focus) return true
+    if (this.view.reach === 1) return this.graph.areNeighbors(node, focus)
+    return this.hoodOf(focus).has(node)
+  }
+
+  /** An edge stays bright when it touches the item; with a longer reach (or hiding the rest), when
+   * both its ends are within reach, which also shows the links among the neighbours. */
+  private edgeInReach(a: string, b: string, focus: string): boolean {
+    if (this.view.reach === 1 && !this.view.hideRest) return a === focus || b === focus
+    return this.inReach(a, focus) && this.inReach(b, focus)
+  }
+
+  /** The items within two steps of `focus`, by the links that are shown. */
+  private hoodOf(focus: string): Set<string> {
+    if (this.hood?.focus === focus && this.hood.reach === this.view.reach) return this.hood.ids
+    const ids = new Set([focus])
+    let frontier = [focus]
+    for (let step = 0; step < this.view.reach; step++) {
+      const next: string[] = []
+      for (const from of frontier) {
+        this.graph.forEachEdge(from, (_edge, attrs, source, target) => {
+          if (!tierShown(attrs.tier as Tier, this.lowestTier)) return
+          const other = source === from ? target : source
+          if (!ids.has(other)) {
+            ids.add(other)
+            next.push(other)
+          }
+        })
+      }
+      frontier = next
+    }
+    this.hood = { focus, reach: this.view.reach, ids }
+    return ids
   }
 
   /** The items linked to `focus` that get their names shown: the most strongly linked few. */
@@ -904,7 +999,7 @@ export class MapController {
     this.topicLayer.setColors(this.layerColors())
     this.pathLayer.setColor(cssVar('--accent'))
     this.sigma.setSetting('labelColor', { color: this.colors.label })
-    this.graph.forEachNode((node, attrs) => this.graph.setNodeAttribute(node, 'color', this.colors[attrs.kind]))
+    this.recolor()
     this.graph.forEachEdge((edge, attrs) => this.graph.setEdgeAttribute(edge, 'color', this.edgeColor(attrs.tier as Tier)))
   }
 }

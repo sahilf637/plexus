@@ -43,10 +43,10 @@ pub struct NoteMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extracted: Option<String>,
     /// Who set the title when it wasn't Plexus's own first guess: "ai" (an AI provider) or "you"
-    /// (the AI title was reverted, so it isn't changed again).
+    /// (the title was set by hand, so the AI doesn't change it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title_by: Option<String>,
-    /// The title before the AI replaced it, to put back.
+    /// The title before the AI replaced it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title_was: Option<String>,
     /// More originals captured together with `asset` under one note (several screenshots with

@@ -40,6 +40,8 @@ const aiEdges: Edge[] = [
   { src: 'sample-2', dst: 'sample-0', kind: 'extends', weight: 0.8, tier: 'strong', reason: 'The Rust book explains ownership in more depth' },
 ]
 let conceptId = 1
+/** Items whose title was set by hand, so the stand-in AI leaves them alone. */
+const ownTitles = new Set<string>()
 for (const [name, indexes] of Object.entries(sampleConcepts)) {
   const concept = { id: conceptId++, name }
   for (const i of indexes) conceptsByItem.set(`sample-${i}`, [...(conceptsByItem.get(`sample-${i}`) ?? []), concept])
@@ -127,7 +129,6 @@ function addItem(title: string, kind: Kind, body: string): CaptureResult {
     extracted: null,
     summary: null,
     titleByAi: false,
-    titleWas: null,
     body,
     assetFile: null,
     attachments: [],
@@ -225,8 +226,7 @@ function enrich(item: ItemDetail, closest?: string) {
     })
     conceptsByItem.set(item.id, concepts)
     item.summary = item.body.split(/(?<=[.!?])\s/)[0]?.slice(0, 160) || null
-    if (item.kind === 'text' && !item.titleByAi && common.length) {
-      item.titleWas = item.title
+    if (item.kind === 'text' && !item.titleByAi && !ownTitles.has(item.id) && common.length) {
       item.title = `${common[0][0].toUpperCase()}${common[0].slice(1)}: ${item.title.slice(0, 40)}`
       item.titleByAi = true
     }
@@ -320,11 +320,14 @@ const commands: Record<string, Command> = {
   },
   enrich_status: (): EnrichStatus => (settings.ai.enabled ? enrichState : { state: 'off', pending: 0, message: null }),
   enrich_retry: () => setStatus({ state: 'idle', pending: 0, message: null }),
-  revert_title: (args) => {
+  set_title: (args) => {
     const item = items.find((i) => i.id === args.id)
-    if (!item?.titleWas) return
-    item.title = item.titleWas
-    item.titleWas = null
+    const title = String(args.title).split(/\s+/).filter(Boolean).join(' ').slice(0, 80)
+    if (!item) return
+    if (!title) throw new Error('a title needs at least one character')
+    // Once set by hand it is never replaced by the AI, even when its answer is on the way.
+    ownTitles.add(item.id)
+    item.title = title
     item.titleByAi = false
     emit('item-updated', { ...item })
   },
@@ -342,6 +345,10 @@ const commands: Record<string, Command> = {
   inspect_folder: (args) => {
     const path = String(args.path ?? settings.libraryPath)
     return { path, notes: path === settings.libraryPath ? items.length : path.includes('Notes') ? 124 : 0, current: path === settings.libraryPath }
+  },
+  change_library: (args) => {
+    if (args.path === settings.libraryPath) throw new Error('That is the library you have open already.')
+    settings.libraryPath = String(args.path)
   },
   pick_folder: () => window.prompt('Folder', '~/Documents/Notes') || null,
   restart_app: () => location.reload(),

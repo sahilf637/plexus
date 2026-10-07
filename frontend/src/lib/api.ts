@@ -58,8 +58,8 @@ export const listAiModels = (connection: AiConnection, key?: string) =>
 export const enrichStatus = () => call<EnrichStatus>('enrich_status')
 /** Tries again after a pause (a wrong key fixed, a limit raised). */
 export const enrichRetry = () => call<void>('enrich_retry')
-/** Puts back the title an item had before the AI renamed it. */
-export const revertTitle = (id: string) => call<void>('revert_title', { id })
+/** Sets an item's title by hand; the AI never replaces it after that. */
+export const setTitle = (id: string, title: string) => call<void>('set_title', { id, title })
 /** Removes a link the AI proposed; it won't come back. */
 export const removeAiLink = (a: string, b: string) => call<void>('remove_ai_link', { a, b })
 export const getTopics = () => call<TopicsData>('get_topics')
@@ -97,6 +97,9 @@ export const startHotkey = () => call<void>('start_hotkey')
 export const inspectFolder = (path?: string) => call<FolderInfo>('inspect_folder', { path })
 /** The system's folder picker; null when cancelled. */
 export const pickFolder = () => call<string | null>('pick_folder')
+/** Saves another folder as the library to open at the next start; rejects a folder Plexus can't
+ * use. Follow it with `restartApp`. */
+export const changeLibrary = (path: string) => call<void>('change_library', { path })
 /** Starts Plexus again (to open another library folder). */
 export const restartApp = () => call<void>('restart_app')
 

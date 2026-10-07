@@ -2,8 +2,8 @@
   import DOMPurify from 'dompurify'
   import { marked } from 'marked'
   import { tick } from 'svelte'
-  import { fileUrl, getItem, linkItems, openItemFile, openSource, openUrl, removeAiLink, revertTitle, search, unlinkItems } from '../lib/api'
-  import { formatBytes, isAiLink, kindIcon, kindLabel, linkLabel, linkStrength, tierLabel, tiers } from '../lib/kinds'
+  import { fileUrl, getItem, linkItems, openItemFile, openSource, openUrl, removeAiLink, search, setTitle, unlinkItems } from '../lib/api'
+  import { formatBytes, isAiLink, kindIcon, kindLabel, linkLabel, linkStrength } from '../lib/kinds'
   import { findQuote, mark, pageOf } from '../lib/quote'
   import { toast } from '../lib/toasts.svelte'
   import type { Concept, Edge, Item, ItemDetail, Topic } from '../lib/types'
@@ -152,10 +152,42 @@
       .filter((r): r is { edge: Edge; item: Item } => r.item !== undefined)
       .sort((a, b) => b.edge.weight - a.edge.weight),
   )
-  /** Related items grouped by how sure the link is, strongest first. */
-  const groups = $derived(
-    tiers.map((tier) => ({ tier, rows: related.filter((r) => r.edge.tier === tier) })).filter((g) => g.rows.length),
+  /** The strongest link of each tier first, then by closeness. */
+  const ranked = $derived(
+    [...related].sort((a, b) => ['strong', 'related', 'maybe'].indexOf(a.edge.tier) - ['strong', 'related', 'maybe'].indexOf(b.edge.tier) || b.edge.weight - a.edge.weight),
   )
+
+  /** What the panel shows under the title: the item itself, what's known about it, or what it connects to. */
+  type Tab = 'content' | 'about' | 'related'
+  let tab = $state<Tab>('content')
+
+  // Renaming: the title turns into a box. Whatever is saved is the user's from then on.
+  let editingTitle = $state(false)
+  let draft = $state('')
+  let titleInput = $state<HTMLTextAreaElement>()
+
+  async function startEdit() {
+    if (!detail) return
+    draft = detail.title
+    editingTitle = true
+    await tick()
+    fitTitle()
+    titleInput?.select()
+  }
+
+  /** Grows the box to its text, so a long title wraps the way it did before editing. */
+  function fitTitle() {
+    if (!titleInput) return
+    titleInput.style.height = 'auto'
+    titleInput.style.height = `${titleInput.scrollHeight + 2}px`
+  }
+
+  function finishEdit(save: boolean) {
+    if (!editingTitle) return
+    editingTitle = false
+    const title = draft.trim()
+    if (save && detail && title && title !== detail.title) setTitle(id, title).catch((e) => toast(`Couldn't rename: ${e}`))
+  }
 
   // Making a link by hand: search, pick.
   let linking = $state(false)
@@ -182,6 +214,8 @@
   $effect(() => {
     void id
     menuOpen = false
+    tab = 'content'
+    editingTitle = false
     linking = false
     linkQuery = ''
     titleHidden = false
@@ -246,12 +280,14 @@
     mark(null)
     quotePage = null
     if (!wanted || !shown || shown.id !== id) return
+    // The text read from a picture lives in About; everything else is quoted in the content.
+    tab = shown.kind === 'image' && !pdfUrl && shown.extractedText ? 'about' : 'content'
     if (pdfUrl && shown.extractedText) {
       quotePage = pageOf(shown.extractedText, wanted)
       return // Marked once that page is drawn (`pdfDrawn`).
     }
     void tick().then(() => {
-      const root = scroller?.querySelector('.content')
+      const root = scroller?.querySelector(tab === 'about' ? '.about' : '.content')
       // Text found in a file is folded away; open it to show the quote.
       root?.querySelectorAll('details').forEach((d) => (d.open = true))
       const range = root ? findQuote(root, wanted) : null
@@ -290,6 +326,14 @@
     example_of: 'var(--kind-url)',
   }
 
+  /** A concept's tint: the same name always gets the same one, picked from a few calm hues. */
+  const CONCEPT_HUES = [215, 265, 330, 15, 40, 95, 150, 180]
+  function conceptHue(name: string): number {
+    let h = 0
+    for (const ch of name.toLowerCase()) h = (h * 31 + ch.charCodeAt(0)) >>> 0
+    return CONCEPT_HUES[h % CONCEPT_HUES.length]
+  }
+
   /** "example.com" from a URL, for the source line. */
   function hostOf(url: string): string {
     try {
@@ -299,13 +343,19 @@
     }
   }
 
+  function shortDate(iso: string): string {
+    return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  }
+
   function capturedLabel(iso: string): string {
     return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
   }
 </script>
 
 <svelte:window
-  onpointerdown={(e) => menuOpen && !(e.target as Element).closest('.more') && (menuOpen = false)}
+  onpointerdown={(e) => {
+    if (menuOpen && !(e.target as Element).closest('.more')) menuOpen = false
+  }}
   onkeydowncapture={(e) => {
     // Esc closes the menu first, before the map gets it (which would close the panel).
     if (menuOpen && e.key === 'Escape') {
@@ -380,51 +430,59 @@
   {#if error}
     <p class="error">{error}</p>
   {:else if detail}
-    {#if path.length}
-      <nav class="path" aria-label="Topics">
-        {#each path as step, i (step.id)}
-          {#if i > 0}<Icon name="chevron" size={12} />{/if}<button onclick={() => ontopic(step.id)}>{step.label}</button>
-        {/each}
-      </nav>
-    {/if}
-    <h2 bind:this={heading}>{detail.title}</h2>
-    <p class="meta">
-      {capturedLabel(detail.capturedAt)}{#if detail.size} · {formatBytes(detail.size)}{/if}
-      {#if detail.titleByAi}
-        · <span class="ai" title={detail.titleWas ? `Was: ${detail.titleWas}` : ''}>AI title</span>
-        <button class="revert" onclick={() => revertTitle(detail!.id)}>Revert</button>
-      {/if}
-    </p>
-    {#if items.get(id)?.summary}<p class="summary">{items.get(id)?.summary}</p>{/if}
-    {#if concepts.length}
-      <ul class="concepts" aria-label="Concepts">
-        {#each concepts as concept (concept.id)}
-          <li>
-            <button class:on={activeConcept === concept.id} onclick={() => onconcept(concept)} title="Show everything about this on the map">
-              {concept.name}
-            </button>
-          </li>
-        {/each}
-      </ul>
-    {/if}
+    <div class="head">
+      <div class="title-row">
+        {#if editingTitle}
+          <textarea
+            class="title-input"
+            rows="1"
+            bind:this={titleInput}
+            bind:value={draft}
+            maxlength="80"
+            aria-label="Title"
+            oninput={fitTitle}
+            onblur={() => finishEdit(true)}
+            onkeydown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                finishEdit(true)
+              }
+              if (e.key === 'Escape') {
+                e.stopPropagation()
+                finishEdit(false)
+              }
+            }}
+          ></textarea>
+        {:else}
+          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+          <h2 bind:this={heading} ondblclick={startEdit} title="Double-click to edit">{detail.title}</h2>
+        {/if}
+        <button class="icon-btn edit" class:editing={editingTitle} onclick={startEdit} title="Edit title" aria-label="Edit title" tabindex={editingTitle ? -1 : 0}><Icon name="edit" size={14} /></button>
+      </div>
+      <p class="meta">
+        {#if editingTitle}Enter to save · Esc to cancel{:else}{shortDate(detail.capturedAt)}{#if path.length}{' · '}{path[path.length - 1].label}{/if}{/if}
+      </p>
+    </div>
+
+    <div class="tabs" role="tablist">
+      <button role="tab" aria-selected={tab === 'content'} class:on={tab === 'content'} onclick={() => (tab = 'content')}>Content</button>
+      <button role="tab" aria-selected={tab === 'about'} class:on={tab === 'about'} onclick={() => (tab = 'about')}>About</button>
+      <button role="tab" aria-selected={tab === 'related'} class:on={tab === 'related'} onclick={() => (tab = 'related')}>
+        Related{#if ranked.length}<span class="count">{ranked.length}</span>{/if}
+      </button>
+    </div>
 
     {#if detail.kind === 'url' && detail.sourceUrl}
-      <button class="source" onclick={() => openSource(detail!.id)} title={detail.sourceUrl}>
+      <button class="source" class:off={tab !== 'content'} onclick={() => openSource(detail!.id)} title={detail.sourceUrl}>
         <Icon name="globe" size={13} /><span>{hostOf(detail.sourceUrl)}</span><Icon name="external" size={12} />
       </button>
     {/if}
 
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-    <div class="content" onclick={contentClick}>
+    <div class="content" class:off={tab !== 'content'} onclick={contentClick}>
       {#if pdfUrl}
         {#if noteHtml}<div class="markdown note">{@html noteHtml}</div>{/if}
         <PdfView src={pdfUrl} page={quotePage} ondrawn={pdfDrawn} />
-        {#if detail.extractedText}
-          <details class="extracted">
-            <summary>Text found</summary>
-            <pre>{detail.extractedText.replace(/<!-- page \d+ -->\n?/g, '')}</pre>
-          </details>
-        {/if}
       {:else if detail.kind === 'image' || detail.kind === 'file'}
         {#if imageUrl}
           <button class="picture" onclick={() => (zoomed = { src: imageUrl!, alt: detail!.title })} title="Show full size">
@@ -448,8 +506,9 @@
         {/each}
         <!-- Sanitised with DOMPurify above. -->
         {#if noteHtml}<div class="markdown note">{@html noteHtml}</div>{/if}
-        {#if detail.extractedText}
-          <details class="extracted" open={detail.kind === 'file'}>
+        <!-- A file with no picture to show is its text. For a picture the text read from it is in About. -->
+        {#if detail.extractedText && detail.kind === 'file'}
+          <details class="extracted" open>
             <summary>Text found</summary>
             <pre>{detail.extractedText}</pre>
           </details>
@@ -465,76 +524,103 @@
       {/if}
     </div>
 
-    {#snippet rows(list: typeof related)}
-      <ul>
-        {#each list as { edge, item } (item.id)}
-          <li>
-            <button onclick={() => onselect(item.id)}>
-              <span class="dot" style:background={`var(--kind-${item.kind})`}></span>
-              <span class="text">
-                <span class="title">{item.title}</span>
-                {#if edge.reason || linkLabel(edge.kind, edge.src === id)}
-                  <span class="reason">
-                    {#if linkLabel(edge.kind, edge.src === id)}<span class="type" style:--tone={linkTone[edge.kind] ?? 'var(--accent)'}>{linkLabel(edge.kind, edge.src === id)}</span>{/if}
-                    {edge.reason ?? ''}
-                  </span>
-                {/if}
-              </span>
-              <span class="strength" title="How closely related">
-                <span style:width={`${linkStrength(edge.weight) * 100}%`}></span>
-              </span>
-            </button>
-            {#if edge.kind === 'user'}
-              <button class="unlink" title="Remove this link" aria-label="Remove link" onclick={() => unlinkItems(id, item.id)}>✕</button>
-            {:else if isAiLink(edge.kind)}
-              <button class="unlink" title="Remove this link" aria-label="Remove link" onclick={() => removeAiLink(id, item.id)}>✕</button>
-            {/if}
-          </li>
-        {/each}
-      </ul>
-    {/snippet}
-
-    <section>
-      {#each groups as group (group.tier)}
-        {#if group.tier === 'maybe'}
-          <!-- Less sure: folded away unless it's all there is. -->
-          <details open={groups.length === 1}>
-            <summary><h3>{tierLabel.maybe} <span class="count">{group.rows.length}</span></h3></summary>
-            {@render rows(group.rows)}
-          </details>
-        {:else}
-          <h3>{tierLabel[group.tier]} <span class="count">{group.rows.length}</span></h3>
-          {@render rows(group.rows)}
+    {#if tab === 'about'}
+      <div class="about">
+        {#if items.get(id)?.summary}
+          <section>
+            <h3><Icon name="sparkles" size={12} />Summary</h3>
+            <p class="summary">{items.get(id)?.summary}</p>
+          </section>
         {/if}
-      {:else}
-        <h3>Related</h3>
-        <p class="muted">{items.get(id)?.status === 'pending' ? 'Finding…' : 'Nothing yet'}</p>
-      {/each}
+        {#if concepts.length}
+          <section>
+            <h3>Concepts</h3>
+            <ul class="concepts" aria-label="Concepts">
+              {#each concepts as concept (concept.id)}
+                <li>
+                  <button class:on={activeConcept === concept.id} style:--hue={conceptHue(concept.name)} onclick={() => onconcept(concept)} title="Show everything about this on the map">{concept.name}</button>
+                </li>
+              {/each}
+            </ul>
+          </section>
+        {/if}
+        <dl class="facts">
+          <dt>Added</dt>
+          <dd>{capturedLabel(detail.capturedAt)}</dd>
+          {#if detail.size}<dt>Size</dt><dd>{formatBytes(detail.size)}</dd>{/if}
+          {#if path.length}
+            <dt>Topic</dt>
+            <dd class="trail">
+              {#each path as step, i (step.id)}{#if i > 0}<Icon name="chevron" size={11} />{/if}<button onclick={() => ontopic(step.id)}>{step.label}</button>{/each}
+            </dd>
+          {/if}
+        </dl>
+        {#if detail.extractedText && (pdfUrl || detail.kind === 'image')}
+          <details class="extracted">
+            <summary>{pdfUrl ? 'Text read from the document' : 'Text read from the picture'}</summary>
+            <pre>{detail.extractedText.replace(/<!-- page \d+ -->\n?/g, '')}</pre>
+          </details>
+        {/if}
+      </div>
+    {:else if tab === 'related'}
+      <div class="related">
+        {#if ranked.length}
+          <ul>
+            {#each ranked as { edge, item } (item.id)}
+              {@const label = linkLabel(edge.kind, edge.src === id)}
+              <li>
+                <button onclick={() => onselect(item.id)}>
+                  <span class="dot" style:background={`var(--kind-${item.kind})`}></span>
+                  <span class="text">
+                    <span class="title">{item.title}</span>
+                    {#if edge.reason || label}
+                      <span class="reason">
+                        {#if label}<span class="type" style:--tone={linkTone[edge.kind] ?? 'var(--accent)'}>{label}</span>{/if}
+                        {edge.reason ?? ''}
+                      </span>
+                    {/if}
+                  </span>
+                  <span class="strength" title="How closely related">
+                    <span style:width={`${linkStrength(edge.weight) * 100}%`}></span>
+                  </span>
+                </button>
+                {#if edge.kind === 'user'}
+                  <button class="unlink" title="Remove this link" aria-label="Remove link" onclick={() => unlinkItems(id, item.id)}>✕</button>
+                {:else if isAiLink(edge.kind)}
+                  <button class="unlink" title="Remove this link" aria-label="Remove link" onclick={() => removeAiLink(id, item.id)}>✕</button>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <p class="muted">{items.get(id)?.status === 'pending' ? 'Finding…' : 'Nothing yet'}</p>
+        {/if}
 
-      {#if linking}
-        <!-- svelte-ignore a11y_autofocus -->
-        <input
-          class="input link-search"
-          type="text"
-          placeholder="Find an item to link"
-          autofocus
-          bind:value={linkQuery}
-          onkeydown={(e) => e.key === 'Escape' && (e.stopPropagation(), (linking = false))}
-        />
-        <ul>
-          {#each candidates as candidate (candidate.id)}
-            <li>
-              <button onclick={() => makeLink(candidate.id)}>
-                <span class="dot" style:background={`var(--kind-${candidate.kind})`}></span>
-                <span class="text"><span class="title">{candidate.title}</span></span>
-              </button>
-            </li>
-          {/each}
-        </ul>
-      {:else}
-        <button class="btn add-link" onclick={() => (linking = true)}><Icon name="link" size={14} />Link to…</button>
-      {/if}
-    </section>
+        {#if linking}
+          <!-- svelte-ignore a11y_autofocus -->
+          <input
+            class="input link-search"
+            type="text"
+            placeholder="Find an item to link"
+            autofocus
+            bind:value={linkQuery}
+            onkeydown={(e) => e.key === 'Escape' && (e.stopPropagation(), (linking = false))}
+          />
+          <ul>
+            {#each candidates as candidate (candidate.id)}
+              <li>
+                <button onclick={() => makeLink(candidate.id)}>
+                  <span class="dot" style:background={`var(--kind-${candidate.kind})`}></span>
+                  <span class="text"><span class="title">{candidate.title}</span></span>
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <button class="btn add-link" onclick={() => (linking = true)}><Icon name="link" size={14} />Link to…</button>
+        {/if}
+      </div>
+    {/if}
   {/if}
   </div>
 </aside>
@@ -678,56 +764,137 @@
     margin-right: -6px;
   }
 
-  .path {
+  .head {
     display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 2px;
-    color: var(--text-muted);
-    font-size: 12px;
+    flex-direction: column;
+    gap: 8px;
+    padding-bottom: 4px;
   }
 
-  .path button {
-    padding: 0 2px;
+  .head .meta {
+    margin: 0;
+  }
+
+  /* Content, About, Related: one thing at a time, each with the whole width. */
+  .tabs {
+    display: flex;
+    gap: 18px;
+    margin: 6px 0 8px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .tabs button {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: auto;
+    padding: 6px 0 7px;
+    margin-bottom: -1px;
     border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
     background: none;
     color: var(--text-muted);
+    font-size: 13px;
   }
 
-  .path button:hover {
+  .tabs button:hover {
     color: var(--text);
   }
 
+  .tabs button.on {
+    border-bottom-color: var(--accent);
+    color: var(--text);
+  }
+
+  .off {
+    display: none !important;
+  }
+
   h2 {
-    margin: 4px 0 0;
-    font-size: 18px;
+    margin: 0;
+    font-size: 16px;
     font-weight: 650;
     letter-spacing: -0.01em;
     line-height: 1.3;
     overflow-wrap: anywhere;
   }
 
-  .ai {
-    color: var(--accent);
+  .title-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 4px;
   }
 
-  .revert {
-    padding: 0;
-    border: none;
-    background: none;
-    color: var(--text-muted);
-    font-size: 12px;
-    text-decoration: underline;
+  .title-row h2 {
+    flex: 0 1 auto;
+    min-width: 0;
   }
 
-  .revert:hover {
+  /* Out of the way until the title is hovered or focused. */
+  .edit {
+    flex: none;
+    margin-top: -3px;
+    opacity: 0;
+    transition: opacity 120ms;
+  }
+
+  .title-row:hover .edit,
+  .edit:focus-visible {
+    opacity: 1;
+  }
+
+  /* The title made editable where it stands: the padding and border are pulled back out with
+   * negative margins, so the text, and everything under it, stays put. */
+  .title-input {
+    flex: 1;
+    min-width: 0;
+    box-sizing: border-box;
+    margin: -4px -8px;
+    padding: 3px 7px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--fill);
     color: var(--text);
+    font: inherit;
+    font-size: 16px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    line-height: 1.3;
+    resize: none;
+    overflow: hidden;
+    outline: none;
+    overflow-wrap: anywhere;
+    transition: border-color 100ms;
+  }
+
+  .title-input:hover,
+  .title-input:focus {
+    border-color: color-mix(in srgb, var(--text-muted) 45%, transparent);
+  }
+
+  .edit.editing {
+    visibility: hidden;
   }
 
   .summary {
-    margin: 2px 0 0;
-    color: var(--text-muted);
+    margin: 4px 0 0;
+    line-height: 1.55;
     overflow-wrap: anywhere;
+  }
+
+  .about,
+  .related {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    padding-top: 6px;
+  }
+
+  .about h3 {
+    display: flex;
+    align-items: center;
+    gap: 5px;
   }
 
   .concepts {
@@ -743,21 +910,59 @@
     display: block;
   }
 
-  .concepts button {
+  /* Each concept gets its own soft tint, mixed with the text colour so it reads in light and dark. */
+  .concepts li button:first-child {
+    --tone: hsl(var(--hue) 65% 55%);
     padding: 2px 10px;
     border: none;
     border-radius: 999px;
-    background: var(--fill);
+    background: color-mix(in srgb, var(--tone) 16%, transparent);
+    color: color-mix(in srgb, var(--tone) 65%, var(--text));
     font-size: 12px;
   }
 
-  .concepts button:hover {
-    background: var(--fill-hover);
+  .concepts li button:first-child:hover {
+    background: color-mix(in srgb, var(--tone) 26%, transparent);
   }
 
-  .concepts button.on {
-    background: var(--accent-soft);
+  /* The one filtering the map: a stronger fill and a thin outline of its own colour. */
+  .concepts li button:first-child.on {
+    background: color-mix(in srgb, var(--tone) 30%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tone) 70%, transparent);
+  }
+
+  .facts {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 8px 16px;
+    margin: 0;
+    padding-top: 14px;
+    border-top: 1px solid var(--line);
+    font-size: 13px;
+  }
+
+  .facts dt {
+    color: var(--text-muted);
+  }
+
+  .facts dd {
+    margin: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .facts .trail {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .facts .trail button {
+    padding: 0 2px;
+    border: none;
+    background: none;
     color: var(--accent);
+    height: auto;
   }
 
   .type {
@@ -1049,6 +1254,11 @@
     margin-left: max(0px, calc((100% - 720px) / 2));
   }
 
+  aside.wide .title-input {
+    font-size: 26px;
+    letter-spacing: -0.02em;
+  }
+
   aside.wide h2 {
     font-size: 26px;
     letter-spacing: -0.02em;
@@ -1065,12 +1275,6 @@
 
   aside.wide .content {
     margin-top: 18px;
-  }
-
-  aside.wide section {
-    margin-top: 28px;
-    padding-top: 18px;
-    border-top: 1px solid var(--line);
   }
 
   .note {
@@ -1097,10 +1301,6 @@
     overflow-wrap: anywhere;
   }
 
-  section {
-    margin-top: 14px;
-  }
-
   h3 {
     margin: 0 0 4px;
     font-size: 11px;
@@ -1108,12 +1308,6 @@
     letter-spacing: 0.04em;
     text-transform: uppercase;
     color: var(--text-muted);
-  }
-
-  ul + h3,
-  ul + details,
-  section > details + h3 {
-    margin-top: 12px;
   }
 
   .count {
@@ -1124,10 +1318,6 @@
   summary {
     cursor: pointer;
     color: var(--text-muted);
-  }
-
-  summary h3 {
-    display: inline;
   }
 
   ul {
@@ -1157,9 +1347,10 @@
   }
 
   .add-link {
-    margin-top: 12px;
+    margin-top: 4px;
     height: 28px;
     font-size: 13px;
+    align-self: flex-start;
   }
 
   .link-search {
@@ -1208,6 +1399,15 @@
   .reason {
     color: var(--text-muted);
     font-size: 12px;
+  }
+
+  /* The Related tab has the room to say why. */
+  .related .reason {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    white-space: normal;
   }
 
   .error {
