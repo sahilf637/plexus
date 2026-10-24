@@ -17,7 +17,8 @@
     "fetch-model": "node scripts/fetch-model.mjs",
     "tauri": "tauri",
     "seed": "node scripts/seed.mjs",
-    "export-map": "node scripts/export-map.mjs"
+    "export-map": "node scripts/export-map.mjs",
+    "scale-map": "node scripts/scale-map.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.1"

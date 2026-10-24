@@ -247,6 +247,10 @@ export function emit(event: string, payload: unknown) {
   for (const handler of listeners.get(event) ?? []) (handler as (p: unknown) => void)(payload)
 }
 
+// With `?map=…` loaded (see `npm run scale-map`), events can be sent from the console to time
+// how the map takes them: `__mock.emit('item-linked', { id, status: 'linked', edges, related: [] })`.
+if (mapUrl) (window as unknown as { __mock: { emit: typeof emit } }).__mock = { emit }
+
 export function listen<T>(event: string, handler: (payload: T) => void): () => void {
   const set = listeners.get(event) ?? new Set()
   set.add(handler as Handler)

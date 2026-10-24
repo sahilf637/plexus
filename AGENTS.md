@@ -20,7 +20,7 @@ an optional slow pass that improves older notes. M4 adds Ask: a read-only agent 
 question from the notes with six small tools, checked citations and its path shown on the map.
 P1 ([plan](docs/plans/P1.md)) polishes it: a first-run setup (folder, optional AI, shortcut) and a
 reader in the item panel (wide mode, PDF pages, full-size pictures, citations opened at the quote).
-Next: M5 (scale, imports, MCP).
+Next: M5 (scale, imports, MCP); [M5](docs/plans/M5.md) starts with measured baselines for scale.
 
 ## Principles
 
@@ -176,6 +176,8 @@ Testing on a realistic library, without touching your own:
 npm run seed -- /tmp/plexus-seed                    # ~230 notes across 15 topics, plus links
 PLEXUS_LIBRARY=/tmp/plexus-seed npm run dev         # run the app on it (env var overrides Settings)
 npm run export-map -- /tmp/plexus-seed              # its map, for `npm run dev:ui` at /?map=map.local.json
+npm run scale-map -- 50000                          # a made-up map of 50k notes, same file (see docs/plans/M5.md)
+cd backend && PLEXUS_SCALE_N=50000 cargo test --release scale_report -- --ignored --nocapture   # timings on a big synthetic index
 cd backend && PLEXUS_SEED=/tmp/plexus-seed cargo test tune_links -- --ignored --nocapture   # link quality report
 cd backend && PLEXUS_SEED=/tmp/plexus-seed cargo test tune_topics -- --ignored --nocapture  # topic quality report
 # Ask quality, with a real provider (also PLEXUS_ASK_KEY, PLEXUS_ASK_KIND=anthropic|gemini):

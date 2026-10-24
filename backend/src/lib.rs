@@ -9,6 +9,8 @@ mod fetch;
 mod library;
 mod llm;
 mod pipeline;
+#[cfg(test)]
+mod scale;
 mod settings;
 mod state;
 mod topics;

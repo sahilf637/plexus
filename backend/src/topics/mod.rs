@@ -305,7 +305,7 @@ fn linked_count(conn: &Connection) -> Result<usize> {
     Ok(conn.query_row("SELECT COUNT(*) FROM items WHERE status = 'linked'", [], |row| row.get::<_, i64>(0))? as usize)
 }
 
-fn rebuild_in(db: &crate::db::Db) -> Result<bool> {
+pub(crate) fn rebuild_in(db: &crate::db::Db) -> Result<bool> {
     let count = db.with(|conn| linked_count(conn))?;
     if count < MIN_ITEMS {
         db.with(|conn| store::clear(conn))?;
